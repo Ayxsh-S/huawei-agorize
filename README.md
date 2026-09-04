@@ -17,10 +17,10 @@ For AI coding assistants:
 
 ## Roles
 
-- A — Data & Geometry
-- B — Model & Training
-- C — Evaluation & Visualisation
-- D — Integration & Submission
+A — 3D Preprocessing & Geometry Engineer      ← Alfred
+B — Global Landmark Model Engineer            ← Ojas
+C — Validation & Geometric Refinement Engineer - Pravi
+D — Inference & Pipeline Engineer - Ayush
 
 ## Important
 
