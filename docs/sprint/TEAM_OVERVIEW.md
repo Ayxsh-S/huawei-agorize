@@ -1,218 +1,364 @@
-# PinnaTwin-Zoom — Team Sprint Overview
+# PinnaTwin-Zoom — Final Team Sprint Overview
 
-## Read this part only if you are a human and short on time
+## Read this if you are human and short on time
 
 **Challenge:** Huawei Munich Tech Arena 2026 — Automatic Extraction of Anatomical Landmarks of Pinna Shape  
 **Team:** Imperial_Huawei  
-**Deadline:** 15 September 2026 (check the logged-in portal for the exact cutoff time)  
+**Deadline:** 15 September 2026  
 **Dataset:** 200 subjects, full head/upper-torso PLY meshes, separate left/right `85 x 3` pinna landmark annotations  
-**Metric:** mean Euclidean distance between predicted and ground-truth landmarks, averaged over both ears and hidden subjects  
-**Team capacity:** 4 people, roughly 3–4 focused hours each per day  
-**Goal:** do **not** implement the full research proposal. Ship the simplest reliable end-to-end product first, then reduce validation error.
+**Metric:** mean Euclidean distance over predicted landmarks, ears and hidden subjects  
+**Working constraint:** 4 people, roughly 3–4 focused hours/person/day, heavy use of AI coding assistants  
+**Goal:** ship a working end-to-end product first; only then improve accuracy.
 
 ---
 
 # What we are actually building
 
-The final product must do this:
-
 ```text
 raw Huawei head PLY
         ↓
-find/crop left and right ear
+A — crop/canonicalise/sample ears
         ↓
-mesh-only canonical transform
+B — PointNet residual landmark prediction
         ↓
-sample point cloud
+C — validate/post-process/ensemble if useful
         ↓
-small PointNet
-        ↓
-canonical mean template + predicted residuals
-        ↓
-optional surface projection
-        ↓
-inverse transform
+D — end-to-end inference + output
         ↓
 left  85 x 3
 right 85 x 3
 in original Huawei coordinates
 ```
 
-We maintain an even simpler emergency fallback:
+We are **not** trying to implement the full original PinnaTwin-Zoom research proposal.
+
+---
+
+# Final engineering roles
+
+## A — 3D Preprocessing & Geometry Engineer — Alfred
+
+Builds:
+
+- PLY loading
+- training annotation loading
+- left/right ear cropping
+- mirroring/canonicalisation
+- mesh-only centring/scaling
+- point sampling
+- normals if useful
+- transform metadata
+- exact inverse transforms
+- processed data cache
+- crop sanity checks
+
+Primary contract:
 
 ```text
-mean left landmarks in Huawei global coordinates
-mean right landmarks in Huawei global coordinates
+raw PLY
+→ canonical ear tensor + invertible transform
 ```
 
-So we should have a valid prediction method before the neural model is finished.
+This is the highest-risk foundation. If A is wrong, every downstream model can silently produce garbage.
 
 ---
 
-# What we are NOT building unless everything else is already finished
+## B — Global Landmark Model Engineer — Ojas
 
-Do **not** spend sprint time on:
+Builds:
 
-- full PinnaTwin bilateral-risk routing;
-- ContourGuard inference routing;
-- heatmap uncertainty;
-- adaptive 128/256/512-point risk patches;
-- learned risk weights;
-- confidence gating;
-- PointNet++ migration;
-- a complicated multi-stage research architecture.
+- small PointNet
+- residual landmark prediction
+- losses
+- training loop
+- augmentation
+- checkpoints
+- GPU experiments
+- model configs
 
-The original proposal remains the research direction. The sprint implementation is the minimum viable version.
-
----
-
-# Four roles
-
-## Role A — Data & Geometry
-Owns:
-- PLY/annotation loading;
-- ear crops;
-- mirroring/canonicalisation;
-- point sampling/normals;
-- transform metadata;
-- inverse transforms;
-- preprocessing cache;
-- crop sanity checks.
-
-## Role B — Model & Training
-Owns:
-- small PointNet;
-- residual prediction;
-- loss;
-- training/validation loop;
-- checkpoints;
-- augmentation;
-- training configs;
-- model experiments.
-
-## Role C — Evaluation & Visualisation
-Owns:
-- frozen subject-level train/validation split;
-- official mean Euclidean error;
-- median/p95/per-contour/per-landmark error;
-- prediction visualisation;
-- worst-case analysis;
-- optional surface-projection experiment;
-- comparison tables.
-
-## Role D — Integration & Submission
-Owns:
-- interfaces between A/B/C;
-- end-to-end `predict_subject(...)`;
-- daily `main` smoke test;
-- experiment log;
-- configuration;
-- final output format;
-- README/reproducibility;
-- final package/submission.
-
-**Roles are equal. Role D integrates; Role D is not the boss.**
-
----
-
-# The two template types — do not confuse them
-
-## Template 0: global-frame mean
-Average training landmarks directly in Huawei's aligned global XYZ frame.
-
-Purpose:
-- immediate non-neural baseline;
-- emergency fallback;
-- first validation number.
-
-## Template 1: canonical-ear mean
-After Role A freezes a **mesh-derived** ear transform, transform TRAINING landmarks using the same transform and compute the canonical mean.
-
-Purpose:
-- residual base for PointNet.
-
-At inference:
+Primary contract:
 
 ```text
-test mesh
-→ mesh-derived transform only
-→ canonical ear
-→ canonical template + PointNet residual
-→ inverse transform
+canonical ear tensor
+→ 85 x 3 canonical landmark prediction
 ```
 
-**Never use validation/test ground-truth landmarks to choose the crop, centre, scale, rotation, mirror transform, or any preprocessing parameter.**
+The model predicts residuals from C's canonical mean template.
 
 ---
 
-# Critical NDA rule
+## C — Validation & Geometric Refinement Engineer
 
-The full Huawei dataset is NDA-protected.
+Builds:
 
-Do not put raw PLYs, annotations, processed caches, or checkpoints in GitHub.
+- subject-level train/validation split
+- Huawei metric
+- global-frame mean template
+- canonical-ear mean template
+- per-landmark/per-contour metrics
+- visualisation/worst-case analysis
+- nearest-surface projection
+- test-time multiple point-sample averaging
+- multi-seed checkpoint averaging
+- optional fixed local refiner if explicitly unlocked
 
-Until the NDA terms are checked, do not assume raw NDA data can be pasted/uploaded into arbitrary external AI chats. Give AI:
-- code;
-- schemas;
-- file names;
-- tensor shapes;
-- coordinate conventions;
-- stack traces;
-- logs;
-- aggregate statistics;
-- synthetic examples.
+Primary contract:
+
+```text
+predictions
+→ reliable metrics + validated post-processing
+```
+
+C owns **both templates**. B consumes the canonical template; A supplies the transforms needed to construct it.
 
 ---
 
-# Daily outcome we care about
+## D — Inference & Pipeline Engineer
+
+Builds:
+
+- `predict_subject(...)`
+- checkpoint/template/config loading
+- left/right orchestration
+- output writer
+- CLI
+- integration tests
+- daily main smoke test
+- reproducibility path
+- README/inference instructions
+- final executable/package
+
+Primary contract:
+
+```text
+raw PLY
+→ left (85,3) + right (85,3)
+```
+
+D starts on day 1 using stubs/mean-template output and progressively swaps in A/B/C modules.
+
+---
+
+# Two templates — do not confuse them
+
+## Template 0 — Global-frame mean template
+
+Average the TRAINING left/right landmark coordinates directly in Huawei's aligned global coordinate frame.
+
+Purpose:
+- immediate non-neural baseline
+- emergency fallback
+- first validation number
+
+Owner: **C**
+
+---
+
+## Template 1 — Canonical-ear mean template
+
+After A freezes a mesh-derived canonical transform:
+
+```text
+training mesh
+→ A's mesh-derived transform
+→ transform TRAINING landmarks
+→ average 85 canonical landmark positions
+```
+
+Purpose:
+- residual base for B's PointNet
+
+Owner: **C**
+
+B loads this template.  
+A does not own template statistics.  
+D does not recompute it.
+
+---
+
+# Critical no-leakage rule
+
+Validation/test ground-truth landmarks must NEVER be used to:
+
+- locate the ear
+- choose a crop
+- calculate centre
+- calculate scale
+- rotate
+- mirror
+- define canonicalisation
+- select points
+- derive any inference transform
+
+At validation/test time the pipeline may use only:
+
+- the supplied mesh
+- frozen training-derived constants/configuration
+
+Ground-truth landmarks may be used as target coordinates and to test transform mathematics during development, but must not define the transform itself.
+
+---
+
+# What we are cutting
+
+Unless the baseline is already stable and the whole team explicitly unlocks them, do not implement:
+
+- PointNet++
+- 85 heatmap outputs
+- uncertainty routing
+- ContourGuard routing
+- bilateral PinnaTwin routing
+- adaptive 128/256/512 patches
+- learned risk weights
+- confidence gating
+- complicated multi-stage research architecture
+
+Optional stretch only:
+- fixed local refiner, owned by C if unlocked
+
+---
+
+# Shared ownership — no duplication
+
+| Responsibility | Owner |
+|---|---|
+| PLY/annotation loading | A |
+| Crop/canonicalisation/mirroring | A |
+| Point sampling/normals | A |
+| Transform/inverse/cache | A |
+| PointNet architecture | B |
+| Loss/augmentation/training/checkpoints | B |
+| Subject split | C |
+| Global mean template | C |
+| Canonical mean template | C |
+| Metric/error analysis | C |
+| Surface projection | C |
+| TTA/multi-sample averaging | C |
+| Multi-seed prediction averaging | C |
+| Fixed local refiner if unlocked | C |
+| `predict_subject()` | D |
+| CLI/config/loading orchestration | D |
+| Prediction output format | D |
+| Integration/smoke tests | D |
+| README/final runnable package | D |
+
+---
+
+# Day-1 independent work
+
+## A
+- open Huawei example notebook
+- load one PLY + annotations
+- plot both ears with landmarks
+- document file/coordinate conventions
+- prototype first crop
+
+## B
+- implement PointNet residual model
+- random tensor forward test
+- synthetic training-loop skeleton
+
+## C
+- freeze subject split
+- implement metric with tests
+- compute/evaluate global mean baseline
+- start template utilities
+
+## D
+- create `predict_subject(mesh_path, ...)` skeleton
+- return global mean template initially
+- build CLI/output writer
+- add one smoke test
+
+All four people code from the start.
+
+---
+
+# Daily sprint milestones
 
 ## Weekend
-Repository works; Huawei notebook understood; `DATA_SPEC.md` written; mean-template baseline exists.
+- repo/context ready
+- Huawei notebook understood
+- `DATA_SPEC.md` started
+- global mean baseline exists
 
 ## Monday
-Safe ear preprocessing + exact inverse transform work.
+- A's safe crop/canonical transform/inverse works
 
 ## Tuesday
-Small PointNet can overfit 4–8 ears.
+- A's cache exists
+- B can overfit 4–8 ears
+- C can build canonical template
+- D has an inference path
 
 ## Wednesday
-First full learned pipeline:
-`raw PLY -> left/right 85x3`.
+Critical milestone:
+
+```text
+raw PLY
+→ A preprocessing
+→ B model
+→ inverse transform
+→ left/right 85 x 3
+```
 
 ## Thursday–Friday
-Improve the number with cheap changes only.
+Only cheap, validated improvements.
 
 ## Saturday
-Only if stable: consider fixed local refiner.
+If global pipeline is stable, C may attempt fixed local refiner.
 
 ## Sunday
 Choose final model.
 
 ## Monday 14 Sept
-Code freeze, reproduce from scratch, package/upload.
+Code freeze and reproducibility.
 
 ## Tuesday 15 Sept
 Emergency/submission only.
 
 ---
 
-# One rule for the whole sprint
+# NDA / repository rule
 
-Before adding any feature, ask:
+Do not commit Huawei raw or derived confidential data.
 
-> Does this measurably improve held-out mean Euclidean error or make the existing end-to-end system more reliable before the deadline?
+At minimum ignore:
 
-If the answer is unclear, **do not build it**.
+```gitignore
+data/
+outputs/
+checkpoints/
+*.ply
+*.npz
+*.npy
+*.pt
+*.pth
+```
+
+Until the NDA terms are confirmed, do not assume raw Huawei data can be uploaded into arbitrary external AI chats.
 
 ---
 
-# What each teammate should do
+# What each person gives their AI
 
-1. Clone the same repo.
-2. Read/paste `01_MASTER_AI_CONTEXT.md` into their AI.
-3. Paste their own role file too.
-4. Tell the AI: **"I am Role A/B/C/D. Follow the master plan. Inspect the current repo before editing. Do not redesign the architecture."**
-5. Work only on the owned deliverables.
-6. Merge at least daily.
-7. Tell the team immediately if a shared interface changes.
-8. Humans perform commits/pushes; AI does not.
+Each AI should read:
+
+1. `MASTER_AI_CONTEXT.md`
+2. that person's role file
+3. `DATA_SPEC.md`
+4. current relevant repo files
+
+Then tell the AI:
+
+> I own Role X. Follow the master plan exactly. Inspect the current repository before editing. Do not redesign the architecture. Do not modify another owner's module unless a shared interface genuinely requires it. Do not commit or push. Start with my role's first-work-session tasks.
+
+---
+
+# Team rule
+
+Before adding anything, ask:
+
+> Does this measurably improve held-out mean Euclidean error or reduce the risk that the end-to-end pipeline fails before the deadline?
+
+If not, do not build it.
