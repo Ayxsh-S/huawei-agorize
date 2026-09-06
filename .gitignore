@@ -1,0 +1,15 @@
+# Python/env/cache
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Project data/artifacts (NDA + large files)
+data/
+outputs/
+checkpoints/
+*.ply
+*.npz
+*.npy
+*.pt
+*.pth
