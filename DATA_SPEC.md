@@ -4,14 +4,23 @@
 > Do not guess conventions.
 
 ## Dataset root
+- Local (not in Git): C:\Users\ChPra\summer 26\huawei_data_complete\2026 Munich Tech Arena - Datas
 
 ## Directory layout
+- mesh/  (subject meshes, .ply)
+- landmarks/  (ear landmarks, .csv)
 
 ## Subject ID convention
+- Format: Pxxxx (example: P0001)
+- IDs are non-contiguous (some numbers skipped)
 
 ## Mesh filename convention
+- <SUBJECT_ID>.ply
+- Example: P0001.ply
 
 ## Annotation filename convention
+- <SUBJECT_ID>_left_ear_landmarks.csv
+- <SUBJECT_ID>_right_ear_landmarks.csv
 
 ## PLY fields
 - Vertices:
@@ -20,11 +29,11 @@
 - Colours/other:
 
 ## Landmark format
-- Shape:
-- Dtype:
+- Shape: (85, 3) per ear file
+- Dtype: float (parsed to float64 in current scripts)
 - Units:
-- Left file/key:
-- Right file/key:
+- Left file/key: <SUBJECT_ID>_left_ear_landmarks.csv
+- Right file/key: <SUBJECT_ID>_right_ear_landmarks.csv
 
 ## Verified contour indices
 - Outer helix:
@@ -33,12 +42,13 @@
 - Superior antihelix:
 
 ## Coordinate system
-- X:
-- Y:
-- Z:
-- Approximate ranges:
+- X: back of head -> front (nose direction)
+- Y: left ear canal -> right ear canal
+- Z: upward
+- Approximate ranges: X [-40.39, 14.29], Y [-105.96, 107.76], Z [-38.01, 44.68]
 
 ## Left/right verification
+- Verified file pairing exists for usable subjects (mesh + left + right).
 
 ## Mirror convention
 - Is one side mirrored?
@@ -46,10 +56,10 @@
 - Visual evidence:
 
 ## Frozen train/validation split
-- Seed:
-- Train subject count:
-- Val subject count:
-- File storing IDs:
+- Seed: 42
+- Train subject count: 160
+- Val subject count: 40
+- File storing IDs: configs/split_seed42.json
 
 ## Crop configuration
 - Left bounds:
@@ -75,7 +85,11 @@
 - Normalisation:
 
 ## Output format required by challenge
+- {"left": np.ndarray((85,3)), "right": np.ndarray((85,3))}
+- Coordinates in original Huawei global frame
 
 ## Known anomalies / edge cases
+- Subject IDs are non-contiguous
 
 ## Last updated
+07/09/2026
