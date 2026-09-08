@@ -6,12 +6,18 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
 - Per subject: left and right pinna landmarks, each [85, 3].
 - Metric: mean Euclidean distance per ear, averaged over all ears and hidden subjects.
 
-## Coordinate frame (VERIFIED from challenge page — meshes are pre-aligned)
+## Coordinate frame (meshes are pre-aligned)
 - Origin: head centre (intersection of axes below).
 - X: back of head -> front (nose tip). +X = anterior.
-- Y: left ear canal -> right ear canal. So left ear at Y<0, right ear at Y>0 (page wording; confirm sign with data).
+- Y: **+Y = the subject's LEFT** (VERIFIED on the real landmarks 2026-09-08:
+  left-ear landmarks sit at Y ~ +75 mm, right-ear landmarks at Y ~ -80 mm).
+  This is the OPPOSITE of the challenge page's wording ("left ear canal ->
+  right ear canal"); the data wins. Anything that assumes the page's sign —
+  including a Y-sign sanity check — is wrong.
 - Z: vertical, +Z = up.
-- Consequence for Role A: left/right mirror is a flip of Y (axis 1). Head centre ~ origin, so crop boxes can be fixed in absolute coordinates.
+- Consequence for Role A: left/right mirror is still a flip of Y (axis 1); only
+  the sign convention's meaning changed, not the mirror axis. Head centre ~
+  origin, so crop boxes can be fixed in absolute coordinates.
 - Units: mm (VERIFIED from vertex ranges: a head+torso spans a few hundred units per axis).
 
 ## Landmark ordering (VERIFIED counts + listed order; index ranges assumed sequential — confirm with data/notebook)
@@ -48,17 +54,22 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
   - first mesh: X[-147.7, 128.2]  Y[-242.5, 211.6]  Z[-263.6, 155.8]
   - across 20 meshes: X[-257.4, 132.7]  Y[-270.5, 270.3]  Z[-309.8, 158.9]
 
-## Annotations (PARTIALLY VERIFIED 2026-09-08)
+## Annotations (VERIFIED 2026-09-08)
 - file: 85 lines, CRLF line endings, no header, no BOM.
-- each line: exactly one comma and 3 numbers, whitespace-separated with
-  variable spacing (some lines have 4–5 whitespace tokens).
-- exact column layout: ? — either `"x, y z"` (3 numeric tokens) or
-  `"idx,x y z"` (4 tokens, leading integer index). `load_landmarks` handles
-  both; `scripts/inspect_dataset.py` section 5 prints the token-count histogram
-  to settle it.
+- exact column layout (VERIFIED): `<idx>,[<x> <y> <z>]` — a landmark index, one
+  comma, then a **numpy array repr in square brackets**: variable spacing
+  between the coordinates and occasionally scientific notation (`5.56e-02`).
+- `idx` runs 0..84 and equals the landmark's 0-based position in the file.
+  `load_landmarks` requires this, so a reordered/duplicated/gappy annotation is
+  refused rather than silently loaded in the wrong order.
+- `load_landmarks` accepts this layout only (the earlier `"x, y z"` /
+  `"idx,x y z"` candidates are gone). Errors name file + line number + reason
+  and never quote the line, so annotation coordinates cannot leak into logs.
 - shape and dtype as loaded: [85, 3] float64 (by construction of the loader)
-- left landmark Y sign: ?   right landmark Y sign: ?
+- left landmark Y sign: **+** (mean Y ~ +75 mm)
+  right landmark Y sign: **-** (mean Y ~ -80 mm)   -> see "Coordinate frame"
 - left ear landmark bbox: ?  right ear landmark bbox: ?
+  (fill from `scripts/inspect_dataset.py` section 6)
 
 ## Crop configuration (?)
 - **derived from `splits/train_ids.txt` ONLY** — never the full dataset. Val

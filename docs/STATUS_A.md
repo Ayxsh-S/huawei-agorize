@@ -14,10 +14,17 @@ Created 2026-09-08. Deadline 2026-09-15.
   - [x] `mesh/P<id>.ply`, `landmarks/P<id>_{left,right}_ear_landmarks.csv`,
         subject ID = full `"P0001"` string, 200 subjects, IDs non-contiguous
   - [x] annotation file format: 85-line CSV, CRLF, one comma per line
-  - [ ] **CSV column layout**: `"x, y z"` or `"idx,x y z"`? — re-run
-        `scripts/inspect_dataset.py` (section 5 now prints the per-line
-        token-count histogram: all-3 → no index column, all-4 → index column)
-  - [ ] left/right landmark Y signs and bboxes (section 6 of the same run)
+  - [x] **CSV column layout** (Alfred, 2026-09-08): `<idx>,[<x> <y> <z>]` — a
+        numpy array repr in brackets, variable spacing, sometimes scientific
+        notation; `idx` = the landmark's 0-based position. `load_landmarks`
+        accepts this layout only; `inspect_dataset.py` section 5 now reports
+        conformance to it instead of guessing between two candidates.
+  - [x] left/right landmark **Y signs** (Alfred, 2026-09-08): **+Y = subject's
+        left** — left ears at Y ≈ +75, right ears at Y ≈ -80. This is the
+        OPPOSITE of the challenge page; `DATA_SPEC.md` and the
+        `inspect_dataset.py` sanity check now follow the data. `mirror_axis`
+        stays 1 (Y) and `mirror_side` is unchanged.
+  - [ ] left/right landmark bboxes (section 6 of the same run)
   - [ ] within-contour point order; contour index ranges really sequential (§3)
   - [ ] left and right use the same ordering? (§3)
 
@@ -31,13 +38,18 @@ Created 2026-09-08. Deadline 2026-09-15.
       returns the full `"P0001"` string (provisional digit-run rule removed)
 - [x] `list_subjects(root)` — sorted IDs of `mesh/P*.ply`
 - [x] `mesh_path(sid, root)`, `landmark_path(sid, side, root)` helpers
-- [x] `load_landmarks(path, side)` — `[85,3]` float64; accepts both candidate
-      CSV layouts, refuses wrong line counts / malformed lines (names the line),
-      refuses a file named for the other side. `parse_landmark_line` exposed.
+- [x] `load_landmarks(path, side)` — `[85,3]` float64; the one verified layout
+      `<idx>,[<x> <y> <z>]`, refuses wrong line counts / malformed lines / an
+      `idx` that disagrees with its position (naming the line number but never
+      its contents), refuses a file named for the other side.
+      `parse_landmark_line` (now returning `(index, xyz)`) and
+      `landmark_line_tokens` exposed.
 - [x] `load_subject_landmarks(sid, root)` — `{"left": [85,3], "right": [85,3]}`
-- [x] `tests/test_data.py` — synthetic PLYs + CSVs in `tmp_path`: both layouts,
-      CRLF/LF, wrong line count, bad-line numbering, side mismatch, ID rule on
-      mesh and landmark filenames, `list_subjects` ignores stray files
+- [x] `tests/test_data.py` — synthetic PLYs + CSVs in `tmp_path`: the real
+      layout (incl. a scientific-notation line and a double-space line),
+      CRLF/LF, wrong line count, bad-line numbering, index mismatch, non-layout
+      lines, "errors never quote the line", side mismatch, ID rule on mesh and
+      landmark filenames, `list_subjects` ignores stray files
 - [ ] Run the loaders on real data once (`inspect_dataset.py` does this)
 
 ## 3. QA visualisation
@@ -90,8 +102,6 @@ Created 2026-09-08. Deadline 2026-09-15.
       `cache/<subject>_<side>.npz`; never committed.
 
 ## Open questions for Alfred
-- CSV layout (3 vs 4 tokens per line) — see §1; the loader handles both, but
-  `DATA_SPEC.md` should record which one is real.
 - PyYAML is used for `configs/crop.yaml` (already installed in the venv, 6.0.3);
   add it to the requirements file when one exists.
 - The workspace is not a git repository yet, so `.gitignore` could not be
@@ -99,6 +109,26 @@ Created 2026-09-08. Deadline 2026-09-15.
   its zip and `*.csv` are now ignored.
 
 ## Done log
+- 2026-09-08 — real-data findings applied: annotation layout confirmed as
+  `<idx>,[<x> <y> <z>]`, so `parse_landmark_line` strips brackets/commas,
+  demands exactly 4 tokens and returns `(index, xyz)`; `load_landmarks` requires
+  `idx` to equal the landmark's 0-based position and no error path quotes a
+  line's contents any more (file + line number + reason only). Tests rewritten
+  onto the real layout (scientific notation, double spacing) plus new
+  index-mismatch and "never quotes the line" tests; the three new guards were
+  mutation-checked. Y convention corrected to **+Y = subject's left** in
+  `DATA_SPEC.md` and in `inspect_dataset.py` (left mean Y > 0, right mean Y < 0;
+  prints "NOT CHECKED" when no ear loaded); `mirror_side`/`mirror_axis`
+  untouched. Stray empty `test.py` at the repo root deleted.
+- 2026-09-08 - reviewer round 4 FIX-FIRST applied to the loader: the
+  non-numeric-token error is raised `from None` (float()'s own message
+  quotes the token, so a chained traceback leaked a coordinate), the
+  index-mismatch message no longer echoes the parsed index, and the
+  "never quotes the line" tests now assert over the whole printed
+  exception chain rather than `str(exc)`. New tests pin the finiteness
+  guard (a `nan`/`inf` line) and BOM tolerance, both previously untested.
+  79 tests pass; each new guard was mutation-checked (breaking it turns
+  the tests red).
 - 2026-09-08 — `load_mesh`, `RawSubject`, `CropConfig`/`crop_ear`, transform +
   inverse + sampling, `plot_ear.py`, `inspect_dataset.py`, synthetic tests.
 - 2026-09-08 — Alfred inspected the real data; `DATA_SPEC.md` filled in
