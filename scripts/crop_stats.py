@@ -49,7 +49,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root, for `src`
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))  # for `src`
 
 from src.data import DATA_ROOT, SIDES, list_subjects, load_subject_landmarks  # noqa: E402
 
@@ -361,8 +362,16 @@ def _write_doc(
 
 
 
-def _describe_existing(path: Path) -> str:
-    """One-line provenance of an existing crop config, for the stale-file warning."""
+def describe_crop_config(path: Path) -> str:
+    """One-line provenance of a crop config: which split it came from and its verdict.
+
+    Used by the stale-file warning below and by the check_* scripts, so a run
+    always says which frozen box it validated.
+    """
+    if not path.is_file() and not path.is_absolute() and (REPO_ROOT / path).is_file():
+        # Same "cwd first, then repo root" rule as geometry.load_crop_config, so
+        # the provenance line describes the file that was actually loaded.
+        path = REPO_ROOT / path
     try:
         with open(path, "r", encoding="utf-8") as fh:
             doc = yaml.safe_load(fh) or {}
@@ -481,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
             # it came from, rather than letting a stale freeze pass unnoticed.
             print(f"   !! {args.out} STILL EXISTS from an earlier run and is what")
             print("      load_crop_config() will return. Check its `split` block:")
-            print(f"      {_describe_existing(args.out)}")
+            print(f"      {describe_crop_config(args.out)}")
             print("      Delete or rename it unless you are sure it is still the one you want.")
         return 1
 
