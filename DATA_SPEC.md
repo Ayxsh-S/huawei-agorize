@@ -27,8 +27,14 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
 | concha outline | 30 | 25–54 |
 | inner helix | 20 | 55–74 |
 | superior antihelix | 10 | 75–84 |
-- Within-contour point order: ?
-- Left and right use the same ordering: ?
+- Within-contour point order: ? (not directly measured; the mirror check below
+  is only sensitive to left-vs-right disagreement, not to the order itself)
+- Left and right use the same ordering: **YES — VERIFIED** (Alfred, 2026-09-08,
+  `scripts/check_mirror.py`). Under the winning mirror configuration the four
+  contour means are 0.0903 / 0.0811 / 0.0968 / 0.0869 canonical units, a spread
+  of only 0.0157 — no contour is indexed in opposite directions on the two
+  sides. See **Mirror** below; the consequence is that Role C needs only ONE
+  shared canonical template.
 
 ## Directory layout (VERIFIED 2026-09-08)
 - data root: $HUAWEI_DATA_ROOT (on Alfred's machine this is inside the repo:
@@ -102,8 +108,9 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
   `splits/train_ids.txt` (sha256 `b2d5ff90...`, 160 subjects, 0 failures):
   - left  lo [-52.01,   40.77, -53.14]   hi [29.29,  122.22, 58.69]
   - right lo [-55.39, -120.96, -50.96]   hi [27.49,  -43.49, 59.68]
-- the 15 mm floor binds on every axis except left Z (margin 15.13 there), i.e.
-  0.25 * median ear extent < 15 mm for X and Y; only the long Z axis exceeds it.
+- the 15 mm floor binds on X and Y for both sides, i.e. 0.25 * median ear extent
+  < 15 mm there. Only the long Z axis exceeds the floor, and barely: margin
+  15.1332 mm on left Z and 15.0016 mm on right Z (see `configs/crop.yaml`).
 - min_vertices threshold for "suspicious": 500
 - config file path: configs/crop.yaml (derived statistic — fine to commit)
 - freeze criterion (printed by `crop_stats.py`): the minimum **leave-one-out**
@@ -223,46 +230,67 @@ separate them. The run therefore decides *mirror vs no mirror*; choosing which
 side carries the flip is a naming convention, and `mirror_side="right"` stays
 unless Alfred says otherwise.
 
-### Result — PENDING Alfred's run (script written and tested 2026-09-08)
+### Result — VERIFIED (Alfred, 2026-09-08, `scripts/check_mirror.py`, 40 training subjects)
 
-Role A cannot run this: the check reads the NDA data, and per `CLAUDE.md` only
-Alfred does that. Paste the run's verdict block here, then tick §5 of
-`docs/STATUS_A.md`:
+**The mirror is right. `mirror_side="right"`, `mirror_axis=1` are RETAINED, and a
+SINGLE SHARED canonical template is valid for Role C.**
 
 ```
-mean / median / p95 index-matched landmark distance (canonical units)
-  A (no mirror)     ?    /  ?  /  ?
-  B (mirror right)  ?    /  ?  /  ?      <- current default
-  C (mirror left)   ?    /  ?  /  ?
-symmetric Chamfer (canonical units, 512-point subsample)
-  A ? / B ? / C ?
-frame floor (canonical origin offset / mm / scale ratio, mean): ? / ? / ?
-winner: ?   margin over runner-up: ?  (?x)
+mean index-matched landmark distance (canonical units / mm)
+  A (no mirror)     0.5169  /  28.74 mm
+  B (mirror right)  0.0882  /   4.90 mm      <- current default, WINNER
+  C (mirror left)   0.0882  /   4.90 mm      <- exact tie with B by construction
+winner: B (= C).  margin over runner-up A: 0.4287 canonical / 23.84 mm  (5.86x)
 per-contour mean landmark distance for the winner:
-  outer helix 0-24 ?   concha 25-54 ?   inner helix 55-74 ?   sup. antihelix 75-84 ?
-  spread across contours: ?      <- the ordering signal, not the level
+  outer helix 0-24  0.0903   concha 25-54  0.0811
+  inner helix 55-74 0.0968   sup. antihelix 75-84  0.0869
+  spread across contours: 0.0157      <- the ordering signal, not the level
 ```
 
-Expected if the current default is right: B = C far below A, and the four
-contour means all of similar size. What each outcome means:
+Read this as three separate findings:
 
-- **B = C win by a wide margin** → the ears really are Y-reflections, the
-  default is correct, nothing changes.
-- **A wins** → the two ears are already aligned without a flip, so the mirror is
-  actively *hurting*: it would be reflecting one ear into a shape the model then
-  has to learn twice. `mirror_side`/`mirror_axis` would need rethinking and the
-  cache rebuilding. The script says this loudly but **changes no default** —
-  Alfred decides.
-- **One contour far above the others under the winner** → left and right index
-  that contour in opposite directions; the mirror is fine but the landmark
-  ordering is not, which would break any index-matched loss. That is also the
-  open "left and right use the same ordering?" question under *Landmark
-  ordering* above. Judge this on the spread between contours; all four sitting
-  at a similar level is the frame floor, not an ordering problem.
+1. **Mirror vs no mirror — settled.** Mirroring beats not mirroring by **5.86x**
+   (0.0882 vs 0.5169 canonical; 4.90 vs 28.74 mm). The two ears of a subject
+   really are Y-reflections of one another. Nothing about
+   `mirror_side`/`mirror_axis` changes and the cache does not need rebuilding.
+2. **Which side carries the flip — a naming convention.** B and C scored
+   identically, as the script predicted: flipping Y on both clouds instead of one
+   is an isometry, so no distance metric can separate them. `mirror_side="right"`
+   is retained on that basis, not because it measured better.
+3. **Landmark ordering — left and right are anatomically matched.** The four
+   contour means (0.0903 / 0.0811 / 0.0968 / 0.0869) all sit at the same level;
+   the **spread is 0.0157**, about 0.9 mm, an order of magnitude below the 0.4287
+   that separates mirror from no-mirror. No contour is indexed in opposite
+   directions on the two sides. **Consequence for Role C: one shared canonical
+   template is valid for both ears** — no per-side template, no per-side
+   landmark permutation, and an index-matched loss is sound on both sides.
 
-Note what the winner does **not** settle: this measures the two ears of the
-*same* subject against each other, so it confirms the mirror convention, not
-that ears are consistent across subjects.
+**What the 0.0882 residual is** — and it is not a correspondence error:
+
+- **genuine inter-ear asymmetry.** A person's two ears are similar, not
+  identical; ~4.9 mm of mean per-landmark difference between a subject's own
+  left and right pinna is anatomically ordinary.
+- **frame mismatch**, ~2.6 mm in X and ~1.6 mm in Z. Each ear is centred on its
+  own cropped-mesh bbox and divided by its own half-extent, and the two frozen
+  crop boxes are not exact Y-reflections of each other. Per the *frame floor*
+  discussion above, X and Z are a **true floor** — a reflection in Y cannot move
+  a point in X or Z, so every subject carries this. It is **not subtracted** from
+  the 0.0882: a constant frame offset and the per-landmark errors combine as
+  vectors, not as scalars.
+
+Neither component is an ordering or convention error, which is what this check
+existed to rule out.
+
+Worst 5 subjects: **P0040, P0004, P0002, P0035, P0010** — the ones whose two ears
+differ most, or whose crop frames are least symmetric. They are a QA list, not a
+failure: nothing in the run failed, and no default was changed.
+
+Scope of the run: 40 of the 160 `splits/train_ids.txt` subjects. The verdict is
+5.86x wide, so more subjects would not flip it; a full 160-subject pass is
+recorded as optional in `docs/STATUS_A.md` → "Post-completion / on request".
+And note what this does **not** settle: it measures the two ears of the *same*
+subject against each other, so it confirms the mirror convention, not that ears
+are consistent across subjects.
 
 ## Point sampling (VERIFIED 2026-09-08)
 - N points per ear: **2048** (`geometry.N_POINTS`).

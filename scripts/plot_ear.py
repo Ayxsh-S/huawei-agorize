@@ -155,7 +155,7 @@ def plot_view(
     extent_parts += [box_corners(cfg.lo, cfg.hi) for cfg in boxes.values()]
     _set_equal_aspect(ax, np.vstack(extent_parts))
     ax.set_xlabel("X (anterior +)")
-    ax.set_ylabel("Y (right +)")
+    ax.set_ylabel("Y (subject's left +)")
     ax.set_zlabel("Z (up +)")
     ax.set_title(title)
     if landmarks or boxes:
