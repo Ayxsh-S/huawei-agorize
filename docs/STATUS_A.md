@@ -117,13 +117,33 @@ Created 2026-09-08. Deadline 2026-09-15.
 - [x] Alfred: run `check_roundtrip.py` — **PASSED** (Alfred, 2026-09-08): max
       |inverse(canonical(GT)) - GT| = 7.1e-15 mm (float64 rounding), recorded
       in `DATA_SPEC.md`.
-- [ ] Alfred: paste the canonical envelope from that run into `DATA_SPEC.md`
-      (it goes to C for the template size)
+- [x] Canonical envelope pasted into `DATA_SPEC.md` (2026-09-08): left
+      X[-0.384,0.459] Y[-0.119,0.521] Z[-0.613,0.682]; right X[-0.356,0.474]
+      Y[-0.105,0.522] Z[-0.667,0.616]; transform scale ~55.9 mm left / ~55.3 mm
+      right (1 mm ~ 0.018 canonical units). Every ear well inside [-1.5, 1.5] —
+      Role C can size the template from this.
 - [x] Mirror **axis** confirmed as Y on real data: +Y = subject's left on all
       200 subjects, so left/right are Y-reflections (`mirror_axis=1`,
       `mirror_side="right"`)
+- [x] `scripts/check_mirror.py` written — compares each subject's own canonical
+      left ear against its own canonical right ear under three configurations
+      (A no mirror, B mirror right = current default, C mirror left), rebuilding
+      both ears from the mesh with the frozen crop config every time (the cache
+      is never read). Two metrics, mean/median/p95 over subjects: symmetric
+      Chamfer on a 512-point subsample of each ear's 2048 canonical points, and
+      the mean index-matched distance over the 85 GT landmarks (decisive).
+      Prints the verdict with the margin over the runner-up, the per-contour
+      means for the winner (so a misordered contour shows up), the worst 5
+      subjects, and writes `outputs/mirror_check.png` (winning configuration,
+      one subject, two viewing angles). B and C are an exact tie by construction
+      — the run decides mirror vs no mirror. **Changes no default**: if the
+      default loses it shouts and exits 0. Synthetic tests only; not yet run.
+- [ ] **Alfred: run `python scripts/check_mirror.py --subject-list
+      splits/train_ids.txt`** and paste the verdict into the PENDING block under
+      `DATA_SPEC.md` → "Mirror". This is the last open assumption in §5.
 - [ ] Visual check of the canonicalised ears themselves (§3) — the sign
       convention is confirmed numerically, the picture is not
+      (`outputs/mirror_check.png` from the run above covers the canonical frame)
 
 ## 6. Sampling
 - [x] `sample_points(points, normals, n=2048, seed=0)` — deterministic
@@ -150,10 +170,13 @@ Created 2026-09-08. Deadline 2026-09-15.
       `tests/test_preprocess.py` + `tests/test_cache.py`, incl. a 2-worker run
       on an on-disk synthetic root).
 - [x] `docs/HANDOFF_A.md` — exact npz key table + the two `src.cache` functions.
-- [ ] Alfred: `python scripts/preprocess.py --subject-list splits/train_ids.txt
-      --with-targets` and the same for `splits/val_ids.txt`; paste the summary
-      (cache size, crop min/median/max) into `DATA_SPEC.md` and tell B/C the
-      cache is ready.
+- [x] Alfred ran `preprocess.py --with-targets` on both splits (2026-09-08):
+      **400 files / 11.6 MB**, 0 failures, crop vertices min 10260 / median
+      ~25000 / max 66654 over all ears, targets invert at 7.105e-15 mm in
+      float64 (stored float32 targets invert to ~1e-6 mm). Recorded in
+      `DATA_SPEC.md`. **Tell B and C the cache is ready** (read it only via
+      `src.cache.load_cached_ear` / `list_cached`, key table in
+      `docs/HANDOFF_A.md`).
 
 ## Open questions for Alfred
 - PyYAML is used for `configs/crop.yaml` (already installed in the venv, 6.0.3);
@@ -163,6 +186,65 @@ Created 2026-09-08. Deadline 2026-09-15.
   its zip and `*.csv` are now ignored.
 
 ## Done log
+- 2026-09-08 — **Cache numbers recorded; `scripts/check_mirror.py` written.**
+  `DATA_SPEC.md` now carries Alfred's real-run figures: cache 400 files /
+  11.6 MB, crop vertices min 10260 / median ~25000 / max 66654 over all 400
+  ears, targets inverting at 7.105e-15 mm in float64 (float32 as stored:
+  ~1e-6 mm), the canonical GT envelope (left X[-0.384,0.459] Y[-0.119,0.521]
+  Z[-0.613,0.682]; right X[-0.356,0.474] Y[-0.105,0.522] Z[-0.667,0.616]) and
+  the transform scales (~55.9 / ~55.3 mm, so 1 mm ~ 0.018 canonical units).
+  New `scripts/check_mirror.py --subject-list ... [--limit N] [--out outputs/]`
+  settles the last open assumption (`mirror_side="right"`, `mirror_axis=1`)
+  numerically: three configurations (A none, B mirror right, C mirror left),
+  each rebuilt from the mesh with the frozen crop config — the cache is never
+  read, since it is fixed to the current setting; crop and point draw are done
+  once per ear and shared, so only the mirror differs. Metrics per subject:
+  symmetric Chamfer (mean of both directed mean NN distances) on a 512-point
+  subsample of each ear's 2048 canonical points, and the mean index-matched
+  distance over the 85 landmarks (decisive), aggregated mean/median/p95, plus
+  per-contour means for the winner, the worst 5 subjects, and
+  `outputs/mirror_check.png` (winning configuration, two viewing angles).
+  B and C are proved an exact tie (mirroring both clouds is an isometry) and
+  the verdict says so; a losing default triggers a loud banner but **no default
+  is touched** and the exit code stays 0 — only an unrunnable check exits 1.
+  Config B is guarded at import against `canonicalize_ear`'s defaults drifting,
+  and the contour ranges are guarded against gaps/overlaps. 20 new synthetic
+  tests in `tests/test_scripts.py` (mirrored world -> B/C exact and A 0.4 off;
+  translated world -> A exact and the banner fires; B == C bit-for-bit; a
+  reversed concha shows up in its own contour row only; empty/suspicious crops
+  refused; --limit / --allow-failures / rejected-config paths; the plot is
+  written from the WINNING configuration, not the default). 157 tests pass;
+  every new guard mutation-checked (the plot-uses-the-winner test was added
+  because the mutation survived without it). senior-reviewer round 1
+  **FIX-FIRST**, all items applied: the verdict now prints BEFORE the figure and
+  the whole drawing (not just the matplotlib import) is inside one try, so a
+  backend or `--out` failure can no longer eat the numbers a full dataset pass
+  just bought; a new `frame_floor` block reports the residual a perfectly
+  mirror-symmetric subject would still score (the two frozen crop boxes are not
+  exact Y-reflections — mirrored centres ~3 mm apart, scales 55.9 vs 55.3 mm,
+  so the decisive metric has a ~0.06 canonical floor), and `DATA_SPEC.md` now
+  says to read the per-contour SPREAD, not the level, as the ordering signal;
+  new tests exercise `subsample`'s real 2048→512 branch (seed-determinism, no
+  duplicates), pin `check_mirror`'s crop→sample→transform against
+  `canonicalize_ear` bit-for-bit under configuration B, and pin the floor's
+  formula and the plot-failure path. The reviewer also caught a stale
+  `make_transform` docstring in `src/geometry.py` still repeating the disproven
+  "Y runs left ear canal to right ear canal" — corrected to the verified
+  convention (docstring only; no signature touched). Reviewer round 2 caught a
+  real error in that new floor: `‖flip(c_right) − c_left‖` is the true residual
+  only if the subject's own mid-sagittal plane is exactly y = 0 — a subject
+  perfectly mirrored about y = y0 scores 0 on the decisive metric yet shows
+  2·y0/scale on the mirror axis — so the floor is now reported **per axis**
+  (`FrameFloor`): X and Z are a genuine floor (a Y-reflection cannot move a
+  point in X or Z), Y is printed as an upper bound, and both the script and
+  `DATA_SPEC.md` state that none of it may be subtracted from the metric
+  (a constant frame offset and per-landmark errors combine as vectors). A test
+  builds the y0 = 3 case (perfect subject, 0.6 on the Y term, 0 on X/Z), the
+  stale `# pragma: no cover` on the plot guard is gone, and the four new floor
+  guards were mutation-checked. Reviewer round 3: **SHIP**, no open items.
+  165 tests pass. **Alfred still has to run the script** — Role A never touches
+  the data — and paste the verdict into the PENDING block under `DATA_SPEC.md`
+  → "Mirror".
 - 2026-09-08 — **Both real-data checks PASSED, crop config FROZEN, cache
   built.** Alfred ran `check_roundtrip.py` (max round-trip error 7.1e-15 mm)
   and `check_crop_all.py --subject-list splits/val_ids.txt` (85/85 landmarks

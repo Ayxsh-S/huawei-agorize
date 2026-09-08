@@ -136,7 +136,8 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
 - mirror_axis: **1 (Y)** — VERIFIED: +Y is the subject's left on all 200
   subjects, so left and right ears are Y-reflections of one another.
 - mirror_side: `"right"` (`canonicalize_ear` default); the left ear is left
-  untouched and the right ear gets its Y component negated.
+  untouched and the right ear gets its Y component negated. Whether a flip is
+  wanted at all is measured by `scripts/check_mirror.py` — see **Mirror** below.
 - visually confirmed on real data: NOT YET (§3 of `docs/STATUS_A.md` — plot
   5-10 subjects). The Y **sign convention** is confirmed numerically on all 200
   subjects; the visual sanity check of the canonicalised ears is still open.
@@ -145,15 +146,129 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
   through `to_dict()`/`from_dict()` and back): max
   |inverse(canonical(GT)) - GT| = **7.1e-15 mm** over every ear checked,
   i.e. float64 rounding — PASS against the 1e-9 mm tolerance.
-- canonical envelope of the GT landmarks: reported by the same script (tells
-  Role C whether the frame suits a template) — Alfred to paste the numbers.
+- **canonical envelope of the GT landmarks** (VERIFIED 2026-09-08, same run;
+  this is the number Role C sizes the template with):
+  - left:  X[-0.384, 0.459]  Y[-0.119, 0.521]  Z[-0.613, 0.682]
+  - right: X[-0.356, 0.474]  Y[-0.105, 0.522]  Z[-0.667, 0.616]
+  Every GT landmark of every ear is well inside [-1.5, 1.5], and inside [-0.7,
+  0.7] in practice. The landmarks occupy only the middle ~2/3 of the canonical
+  cube because the crop box (and therefore the scale) is deliberately larger
+  than the ear: the box carries the ~15 mm margin, so the pinna does not fill
+  it. The frame is centred and consistent across sides, which is what a
+  mean-shape template needs.
+- **transform scale** (mm per canonical unit, half the largest cropped-bbox
+  extent): ~55.9 mm left, ~55.3 mm right. A canonical unit is therefore ~55 mm;
+  a 1 mm error in Huawei coordinates is ~0.018 canonical units, which is the
+  conversion Role B needs to read a canonical-space loss in millimetres.
+
+## Mirror (left/right canonical alignment) — MEASURED BY `scripts/check_mirror.py`
+
+The mirror **axis** is verified (Y, from the +Y = subject's left finding on all
+200 subjects). What was never measured is whether flipping Y actually lands a
+subject's two canonical ears on top of each other, and which side should carry
+the flip. `scripts/check_mirror.py --subject-list splits/train_ids.txt` settles
+it: for every subject it rebuilds both canonical ears from the mesh with the
+frozen crop config (the cache is never read — it is fixed to the current setting
+and could only confirm it) under three configurations,
+
+| cfg | setting | meaning |
+|---|---|---|
+| A | `mirror_axis=None` both sides | no mirror at all |
+| B | `mirror_side="right"`, `mirror_axis=1` | **current default** |
+| C | `mirror_side="left"`, `mirror_axis=1` | flip the other side instead |
+
+and reports two metrics per configuration (mean / median / p95 over subjects):
+
+1. symmetric Chamfer distance between the two canonical point clouds — the mean
+   of the two directed mean nearest-neighbour distances — on a deterministic
+   512-point subsample of each ear's 2048 canonical points;
+2. **mean per-landmark Euclidean distance between the canonical left and
+   canonical right GT landmark sets, index for index** — decisive, because it is
+   the only one of the two that can see a correspondence error.
+
+Both in canonical units (x ~55 mm to read them as millimetres). The GT is
+measured, never used to build a transform.
+
+**The decisive metric has a floor, and the run prints it per axis.** Each ear is
+centred on its own crop bbox and divided by its own half-extent, and the two
+frozen crop boxes are not exact Y-reflections of each other - from the frozen
+bounds above, mirroring the right box's centre leaves it ~3 mm from the left
+box's (~0.06 canonical units), and the two scales differ (55.9 vs 55.3 mm). So a
+perfectly mirror-symmetric, perfectly index-matched subject still scores above
+zero. Read the printed block carefully: the axes do NOT mean the same thing.
+
+- **X and Z are a true floor.** A reflection in Y cannot move a point in X or Z,
+  so whatever shows up there is genuine frame mismatch that every subject
+  carries.
+- **Y is an upper bound, not a floor.** It also contains the subject's own
+  mid-sagittal offset from y = 0, which is not an error at all: a subject
+  perfectly mirrored about y = y0 scores exactly 0 on the decisive metric while
+  showing 2*y0/scale in this term. The two cannot be separated from the crop
+  centres alone (the estimator that removes y0 zeroes the term identically), so
+  treat Y as a ceiling.
+- **Never subtract any of it from the decisive metric.** A constant frame offset
+  and the per-landmark errors combine as vectors, not as scalars. It is a
+  reference for reading the level, nothing more.
+
+(The ~3 mm above is an estimate from the frozen box centres; the real frames are
+the cropped *mesh* bboxes, which is what the script measures per subject - use
+its numbers.) Therefore: **quote the per-contour SPREAD, not the absolute level,
+as evidence about landmark ordering**. What the floor does NOT do is favour a
+configuration - A, B and C share one crop, one centre, one scale and one point
+draw per ear, so it shifts all three equally and the comparison stands.
+
+**B and C are an exact tie by construction** and the script says so: flipping Y
+on both clouds instead of one is an isometry, so no distance metric can
+separate them. The run therefore decides *mirror vs no mirror*; choosing which
+side carries the flip is a naming convention, and `mirror_side="right"` stays
+unless Alfred says otherwise.
+
+### Result — PENDING Alfred's run (script written and tested 2026-09-08)
+
+Role A cannot run this: the check reads the NDA data, and per `CLAUDE.md` only
+Alfred does that. Paste the run's verdict block here, then tick §5 of
+`docs/STATUS_A.md`:
+
+```
+mean / median / p95 index-matched landmark distance (canonical units)
+  A (no mirror)     ?    /  ?  /  ?
+  B (mirror right)  ?    /  ?  /  ?      <- current default
+  C (mirror left)   ?    /  ?  /  ?
+symmetric Chamfer (canonical units, 512-point subsample)
+  A ? / B ? / C ?
+frame floor (canonical origin offset / mm / scale ratio, mean): ? / ? / ?
+winner: ?   margin over runner-up: ?  (?x)
+per-contour mean landmark distance for the winner:
+  outer helix 0-24 ?   concha 25-54 ?   inner helix 55-74 ?   sup. antihelix 75-84 ?
+  spread across contours: ?      <- the ordering signal, not the level
+```
+
+Expected if the current default is right: B = C far below A, and the four
+contour means all of similar size. What each outcome means:
+
+- **B = C win by a wide margin** → the ears really are Y-reflections, the
+  default is correct, nothing changes.
+- **A wins** → the two ears are already aligned without a flip, so the mirror is
+  actively *hurting*: it would be reflecting one ear into a shape the model then
+  has to learn twice. `mirror_side`/`mirror_axis` would need rethinking and the
+  cache rebuilding. The script says this loudly but **changes no default** —
+  Alfred decides.
+- **One contour far above the others under the winner** → left and right index
+  that contour in opposite directions; the mirror is fine but the landmark
+  ordering is not, which would break any index-matched loss. That is also the
+  open "left and right use the same ordering?" question under *Landmark
+  ordering* above. Judge this on the spread between contours; all four sitting
+  at a similar level is the frame floor, not an ordering problem.
+
+Note what the winner does **not** settle: this measures the two ears of the
+*same* subject against each other, so it confirms the mirror convention, not
+that ears are consistent across subjects.
 
 ## Point sampling (VERIFIED 2026-09-08)
 - N points per ear: **2048** (`geometry.N_POINTS`).
-- typical crop vertex count: ~23-25k vertices per ear (P0001/P0002); the
-  smallest crop over the 40 held-out val subjects is 10260 vertices (VERIFIED
-  2026-09-08), i.e. >= 5x the 2048 needed, so sampling is **without
-  replacement** in practice. `sample_points` still falls back to replacement
+- crop vertex count over all 400 ears of both splits (VERIFIED 2026-09-08 from
+  the cache build): min 10260, median ~25000, max 66654, i.e. >= 5x the 2048
+  needed on every ear, so sampling is **without replacement** everywhere. `sample_points` still falls back to replacement
   if a crop ever came up short, `canonicalize_ear` records
   `sampled_with_replacement` in the QA dict, and `scripts/preprocess.py`
   counts such ears in its summary.
@@ -187,11 +302,26 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
   ONLY when built with `--with-targets`; each ear's targets are verified at
   write time to invert back to the original GT to < 1e-9 mm (float64, through
   the stored transform) or the run aborts naming the subject.
+  **VERIFIED on the real cache build (Alfred, 2026-09-08): worst ear
+  7.105e-15 mm**, i.e. float64 rounding, over all 400 ears. That guarantee is
+  on the float64 values; the `targets` array is then cast to float32, so what a
+  reader gets back inverts to ~1e-6 mm — negligible against a metric measured in
+  millimetres, but it is 1e-6 and not 1e-15. Role D should invert **predictions**
+  (float32 in, float64 transform), which is the same path.
 - staleness guard: an existing file built with a different `n_points`, `seed`,
   crop config sha256 or target policy fails the run instead of being skipped.
-- total cache size on disk: ~25 KB per ear without targets (2048 x 3 float32 +
-  metadata), ~26 KB with; ~10 MB for all 400 ears. Exact figure printed by
-  `preprocess.py` — Alfred to record after the real run.
+- **BUILT (Alfred, 2026-09-08)**: `preprocess.py --with-targets` run over both
+  splits (`splits/train_ids.txt` then `splits/val_ids.txt`) — **400 files,
+  11.6 MB on disk** (~29 KB per ear with targets), 0 failures, every ear
+  sampled without replacement. The cache is ready for Roles B and C; read it
+  only through `src.cache.load_cached_ear` / `list_cached`
+  (`docs/HANDOFF_A.md`).
+- crop vertices over all 400 cached ears (both sides): **min 10260, median
+  ~25000, max 66654** — the smallest ear still gives 5x the 2048 points sampled,
+  and the largest is ~33x, so the sampling density per ear varies by about that
+  factor. Nothing in the pipeline normalises for it (2048 points are drawn
+  uniformly from whatever the crop contains), which is worth knowing if Role B
+  ever sees a subject-size effect.
 
 ## Output format (?)
 - submission file format expected by Huawei: ?
