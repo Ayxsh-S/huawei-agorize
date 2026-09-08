@@ -79,7 +79,13 @@ def main():
         "B0_global_mean": {
             "mean": metrics["all_ears"]["mean"],
             "median": metrics["all_ears"]["median"],
-            "p95": metrics["all_ears"]["p95"]
+            "p95": metrics["all_ears"]["p95"],
+            "left_mean": metrics["left"]["mean"],
+            "right_mean": metrics["right"]["mean"],
+            "left_median": metrics["left"]["median"],
+            "right_median": metrics["right"]["median"],
+            "left_p95": metrics["left"]["p95"],
+            "right_p95": metrics["right"]["p95"],
         }
     }, indent=2))
 
