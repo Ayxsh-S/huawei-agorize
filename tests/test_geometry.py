@@ -126,8 +126,11 @@ def test_sample_points_upsamples_when_too_few():
     assert sampled.shape == (2048, 3)
     assert sampled_normals is not None
     assert sampled_normals.shape == (2048, 3)
-    # Every sampled point came from the input set.
-    assert np.all(np.isin(sampled, points))
+    # Every sampled ROW came from the input set. np.isin() would only check that
+    # each coordinate appears *somewhere* in the input, which a shuffled or
+    # recombined row would also pass.
+    source_rows = {tuple(row) for row in points}
+    assert {tuple(row) for row in sampled} <= source_rows
 
 
 def test_sample_points_deterministic_and_no_replacement_when_plenty():
@@ -142,6 +145,94 @@ def test_sample_points_deterministic_and_no_replacement_when_plenty():
     assert np.array_equal(a, b)                       # same seed -> same sample
     assert not np.array_equal(a, c)                   # different seed -> different sample
     assert len(np.unique(a, axis=0)) == 128           # no replacement when M >= n
+
+
+def _two_blob_subject(n_per_blob: int = 3000, seed: int = 31) -> RawSubject:
+    """One 'head' whose two ears are well-separated blobs either side of Y=0.
+
+    Left blob sits at Y around -20, right blob at Y around +20, and the two are
+    separated by an empty band across Y=0 so a per-side crop box can only ever
+    contain one of them. Nothing here comes from real data.
+    """
+    rng = np.random.default_rng(seed)
+    left = rng.normal(loc=[10.0, -20.0, 5.0], scale=[3.0, 1.5, 2.0], size=(n_per_blob, 3))
+    right = rng.normal(loc=[10.0, 20.0, 5.0], scale=[3.0, 1.5, 2.0], size=(n_per_blob, 3))
+    vertices = np.vstack([left, right])
+    normals = rng.normal(size=vertices.shape)
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    raw = RawSubject(
+        subject_id="synthetic_two_blob",
+        vertices=vertices,
+        faces=None,
+        normals=normals,
+        mesh_path="<synthetic>",
+    )
+    return raw
+
+
+# Boxes generous on X and Z (so Gaussian tails are not clipped) but tight on Y,
+# where the two blobs are separated by an empty band across Y = 0.
+_LEFT_BLOB_CFG = CropConfig(
+    side="left", lo=[-40.0, -40.0, -45.0], hi=[60.0, -8.0, 55.0], min_vertices=10
+)
+_RIGHT_BLOB_CFG = CropConfig(
+    side="right", lo=[-40.0, 8.0, -45.0], hi=[60.0, 40.0, 55.0], min_vertices=10
+)
+
+
+def test_two_blob_subject_each_side_inverts_into_its_own_blob():
+    """Per-side crops stay in their own blob, and the inverse lands back there.
+
+    This is the property the whole canonical pipeline rests on: a prediction made
+    in canonical space must come back into the *same* ear it came from.
+    """
+    raw = _two_blob_subject()
+
+    for side, cfg in (("left", _LEFT_BLOB_CFG), ("right", _RIGHT_BLOB_CFG)):
+        ear = canonicalize_ear(raw, side, cfg, mirror_side="right", n_points=512, seed=0)
+
+        assert ear.side == side
+        assert ear.points.shape == (512, 3)
+
+        # The canonical points invert back inside this side's crop box ...
+        recovered = inverse_transform_points(ear.points, ear.transform)
+        assert np.all(recovered >= cfg.lo - 1e-9)
+        assert np.all(recovered <= cfg.hi + 1e-9)
+
+        # ... on the correct side of Y=0, i.e. into its own blob, not the other.
+        if side == "left":
+            assert np.all(recovered[:, 1] < 0.0)
+        else:
+            assert np.all(recovered[:, 1] > 0.0)
+
+        # ... and they are genuinely rows of that side's cropped vertices.
+        crop_points, _, _ = crop_ear(raw, side, cfg)
+        crop_rows = {tuple(np.round(row, 9)) for row in crop_points}
+        assert {tuple(np.round(row, 9)) for row in recovered} <= crop_rows
+
+    # The two sides really are disjoint point sets.
+    left_crop, _, _ = crop_ear(raw, "left", _LEFT_BLOB_CFG)
+    right_crop, _, _ = crop_ear(raw, "right", _RIGHT_BLOB_CFG)
+    n_per_blob = raw.vertices.shape[0] // 2
+    assert left_crop.shape[0] == n_per_blob and right_crop.shape[0] == n_per_blob
+    assert np.all(left_crop[:, 1] < 0.0) and np.all(right_crop[:, 1] > 0.0)
+    assert not ({tuple(r) for r in left_crop} & {tuple(r) for r in right_crop})
+
+
+def test_two_blob_subject_rejects_side_config_mismatch():
+    """A left box handed to the right side (or vice versa) must raise, not crop."""
+    raw = _two_blob_subject()
+
+    # match="side" so an unrelated failure (empty crop, bad shape) cannot pass
+    # this test by accident.
+    with pytest.raises(ValueError, match="side"):
+        crop_ear(raw, "right", _LEFT_BLOB_CFG)
+    with pytest.raises(ValueError, match="side"):
+        crop_ear(raw, "left", _RIGHT_BLOB_CFG)
+    with pytest.raises(ValueError, match="side"):
+        canonicalize_ear(raw, "right", _LEFT_BLOB_CFG)
+    with pytest.raises(ValueError, match="side"):
+        canonicalize_ear(raw, "left", _RIGHT_BLOB_CFG)
 
 
 def test_ear_transform_dict_round_trip():

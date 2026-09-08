@@ -161,6 +161,15 @@ def load_crop_config(side: str, path: str | Path = DEFAULT_CROP_CONFIG) -> CropC
         sides:
           left:  {lo: [x, y, z], hi: [x, y, z], min_vertices: 500, ...}
           right: {...}
+
+    Raises
+    ------
+    ValueError
+        If the document carries ``freeze_criterion_passed: false``. Bounds that
+        failed the leave-one-out freeze check would truncate an unseen subject,
+        so they must never be loadable as if frozen — ``crop_stats.py`` writes
+        those to ``crop.rejected.yaml``, and this is the second lock on the
+        same door.
     """
     import yaml  # local import: geometry stays importable without PyYAML
 
@@ -168,6 +177,12 @@ def load_crop_config(side: str, path: str | Path = DEFAULT_CROP_CONFIG) -> CropC
     cfg_path = _resolve_config_path(path)
     with open(cfg_path, "r", encoding="utf-8") as fh:
         doc = yaml.safe_load(fh)
+    if isinstance(doc, dict) and doc.get("freeze_criterion_passed") is False:
+        raise ValueError(
+            f"{cfg_path}: freeze_criterion_passed is false — these bounds failed the "
+            "leave-one-out freeze check and must not be used. Re-run "
+            "scripts/crop_stats.py with a wider margin."
+        )
     try:
         entry = doc["sides"][side]
         lo, hi = entry["lo"], entry["hi"]
