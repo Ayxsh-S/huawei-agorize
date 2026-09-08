@@ -1,0 +1,22 @@
+# --- Environments -----------------------------------------------------------
+.venv/
+
+# --- NDA-protected Huawei data and derived artefacts ------------------------
+# Never commit raw meshes, annotations, caches, checkpoints or outputs.
+data/
+2026 Munich Tech Arena - Datas/
+2026 Munich Tech Arena - Datas.zip
+*.csv
+outputs/
+checkpoints/
+cache/
+*.ply
+*.npz
+*.npy
+*.pt
+*.pth
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
