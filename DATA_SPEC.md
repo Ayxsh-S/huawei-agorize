@@ -61,6 +61,13 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
 - left ear landmark bbox: ?  right ear landmark bbox: ?
 
 ## Crop configuration (?)
+- **derived from `splits/train_ids.txt` ONLY** — never the full dataset. Val
+  subjects must not influence a frozen preprocessing parameter (no-leakage rule,
+  `CLAUDE.md`). `crop_stats.py` requires `--subject-list` and records that file's
+  path, sha256 and subject count inside `configs/crop.yaml`, so a config left over
+  from a different split is detectable. Regenerate `crop.yaml` whenever the train
+  set changes. The split itself is provisional (Role A default 160/40, seed 42);
+  Role C owns the real one — see `splits/README.md`.
 - source of bounds: training landmark min/max per side + margin (frozen once)
 - margin per axis: max(0.25 * median per-subject ear extent on that axis, 15 mm)
   (`scripts/crop_stats.py`; values recorded in `configs/crop.yaml`)
@@ -68,6 +75,15 @@ Source: challenge topic page (public) + local dataset inspection (Alfred, 2026-0
 - right crop lo / hi: ?
 - min_vertices threshold for "suspicious": 500
 - config file path: configs/crop.yaml (derived statistic — fine to commit)
+- freeze criterion (printed by `crop_stats.py`): the minimum **leave-one-out**
+  headroom must be > 0 on every axis for both sides. Each subject is measured
+  against a box rebuilt without it, which is what an unseen subject would face;
+  "no training subject is outside its own envelope" is true by construction and
+  proves nothing.
+- leave-one-out min headroom, left / right: ?  (fill once run on real data)
+- a run that fails the criterion writes `crop.rejected.yaml`, never `crop.yaml`,
+  and `load_crop_config` refuses any file carrying `freeze_criterion_passed:
+  false`.
 
 ## Canonical transform (?)
 - centre definition (crop bbox centre): ?

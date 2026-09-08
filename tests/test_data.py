@@ -355,6 +355,35 @@ def test_load_landmarks_names_bad_line(tmp_path: Path) -> None:
         load_landmarks(path, "left")
 
 
+def test_load_landmarks_rejects_mixed_layout(tmp_path: Path) -> None:
+    """A file that switches between the two layouts is refused, naming the line."""
+    points = _synthetic_landmarks(7)
+
+    # 3-token file with one 4-token line at line 13 (1-based).
+    path = _write_csv_xyz_layout(tmp_path / "P0007_left_ear_landmarks.csv", points)
+    lines = path.read_bytes().split(b"\r\n")
+    x, y, z = points[12]
+    lines[12] = f"12,{x:.6f} {y:.6f} {z:.6f}".encode("ascii")
+    path.write_bytes(b"\r\n".join(lines))
+
+    with pytest.raises(ValueError, match="line 13"):
+        load_landmarks(path, "left")
+
+    # ... and the other direction: a 4-token file with one bare xyz line at 5.
+    path2 = _write_csv_index_layout(tmp_path / "P0008_left_ear_landmarks.csv", points)
+    lines2 = path2.read_bytes().split(b"\r\n")
+    x, y, z = points[4]
+    lines2[4] = f"{x:.6f}, {y:.6f} {z:.6f}".encode("ascii")
+    path2.write_bytes(b"\r\n".join(lines2))
+
+    with pytest.raises(ValueError, match="line 5"):
+        load_landmarks(path2, "left")
+
+    # A consistent file of either layout still loads.
+    ok = _write_csv_index_layout(tmp_path / "P0009_left_ear_landmarks.csv", points)
+    np.testing.assert_allclose(load_landmarks(ok, "left"), points, atol=1e-6)
+
+
 def test_load_landmarks_rejects_side_mismatch(tmp_path: Path) -> None:
     path = _write_csv_xyz_layout(tmp_path / "P0006_left_ear_landmarks.csv", _synthetic_landmarks())
     with pytest.raises(ValueError):

@@ -294,6 +294,8 @@ def load_landmarks(path: str | Path, side: str) -> np.ndarray:
 
     Text file, 85 non-empty lines, each ``"x, y z"`` or ``"idx,x y z"`` with
     arbitrary whitespace (CRLF fine, no header, no BOM expected but tolerated).
+    Every line must use the *same* layout: a file mixing 3-token and 4-token
+    lines is rejected, naming the first line that disagrees.
 
     Returns
     -------
@@ -308,8 +310,9 @@ def load_landmarks(path: str | Path, side: str) -> np.ndarray:
     Raises
     ------
     ValueError
-        Naming the offending line number on a malformed line, or if the file
-        does not contain exactly 85 landmark lines.
+        Naming the offending line number on a malformed line or on the first
+        line whose token count disagrees with the rest of the file, or if the
+        file does not contain exactly 85 landmark lines.
     """
     if side not in SIDES:
         raise ValueError(f"side must be one of {SIDES}, got {side!r}")
@@ -318,13 +321,30 @@ def load_landmarks(path: str | Path, side: str) -> np.ndarray:
 
     text = path.read_text(encoding="utf-8-sig")
     rows: list[np.ndarray] = []
+    layout_tokens: int | None = None      # 3 ("x, y z") or 4 ("idx,x y z")
+    layout_lineno: int | None = None      # where that layout was first seen
     for lineno, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
         try:
-            _, xyz = parse_landmark_line(line)
+            n_tokens, xyz = parse_landmark_line(line)
         except ValueError as exc:
             raise ValueError(f"{path}: line {lineno}: {exc}") from exc
+        if n_tokens not in (3, 4):
+            raise ValueError(
+                f"{path}: line {lineno}: expected 3 or 4 tokens per landmark line, got {n_tokens}"
+            )
+        # One file, one layout. A file that mixes "x, y z" and "idx,x y z" lines
+        # is not a layout we can trust to mean what it looks like, so refuse it
+        # rather than silently guessing per line (see DATA_SPEC.md).
+        if layout_tokens is None:
+            layout_tokens, layout_lineno = n_tokens, lineno
+        elif n_tokens != layout_tokens:
+            raise ValueError(
+                f"{path}: line {lineno}: inconsistent CSV layout — {n_tokens} tokens here but "
+                f"{layout_tokens} on line {layout_lineno}; the whole file must use one layout "
+                f"(either 'x, y z' or 'idx,x y z')"
+            )
         rows.append(xyz)
 
     if len(rows) != N_LANDMARKS:
