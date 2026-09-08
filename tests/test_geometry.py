@@ -6,6 +6,9 @@ read (see ``CLAUDE.md``).
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -374,3 +377,86 @@ def test_load_crop_config_rejects_missing_side(tmp_path):
     cfg_path.write_text("sides:\n  left:\n    lo: [0, 0, 0]\n    hi: [1, 1, 1]\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_crop_config("right", cfg_path)
+
+
+# ---------------------------------------------------------------------------
+# The committed frozen artefact.
+#
+# configs/crop.yaml is the one file every downstream role depends on, and it is
+# committed (a derived aggregate, not raw data). These tests pin it against the
+# numbers recorded in DATA_SPEC.md and docs/HANDOFF_A.md so a hand-edit or an
+# accidental re-run of scripts/crop_stats.py cannot change the frozen box
+# unnoticed. No Huawei data is read — only the committed YAML and the committed
+# subject list.
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+FROZEN_CROP = REPO_ROOT / "configs" / "crop.yaml"
+
+# Exactly the values in configs/crop.yaml, quoted to 4 dp in DATA_SPEC.md
+# and docs/HANDOFF_A.md. Changing the box means changing all three together
+# AND rebuilding the cache — see docs/HANDOFF_A.md "Rebuild the cache".
+FROZEN_BOUNDS = {
+    "left": ([-52.0145, 40.7728, -53.1446], [29.2909, 122.2154, 58.6937]),
+    "right": ([-55.3936, -120.9620, -50.9584], [27.4891, -43.4874, 59.6772]),
+}
+FROZEN_SPLIT_SHA256 = "b2d5ff901b641fffa6f1bf1c19a587d3c4ef55e9eb32c697f0c70bbf506b1520"
+
+
+def test_committed_crop_config_matches_the_frozen_numbers():
+    """The committed box is exactly what DATA_SPEC.md and HANDOFF_A.md promise."""
+    assert FROZEN_CROP.is_file(), f"{FROZEN_CROP} is missing — the frozen box is committed"
+    for side, (lo, hi) in FROZEN_BOUNDS.items():
+        cfg = load_crop_config(side, FROZEN_CROP)
+        assert cfg.side == side
+        np.testing.assert_allclose(cfg.lo, lo, rtol=0, atol=1e-4)
+        np.testing.assert_allclose(cfg.hi, hi, rtol=0, atol=1e-4)
+        assert cfg.min_vertices == 500
+        assert np.all(cfg.hi > cfg.lo)
+
+
+def test_committed_crop_config_passed_the_freeze_criterion():
+    """A config that failed leave-one-out must never be the committed one."""
+    import yaml
+
+    doc = yaml.safe_load(FROZEN_CROP.read_text(encoding="utf-8"))
+    assert doc["freeze_criterion_passed"] is True
+    for side in ("left", "right"):
+        headroom = doc["sides"][side]["stats"]["loo_min_headroom_per_axis_mm"]
+        assert min(headroom) > 0.0, f"{side}: leave-one-out headroom must be positive"
+
+
+def test_committed_crop_config_names_the_committed_training_split():
+    """No-leakage provenance: the frozen box came from splits/train_ids.txt only.
+
+    The sha256 recorded inside the YAML must still be the sha256 of the committed
+    training list — otherwise the box and the split have drifted apart and the
+    box would have to be regenerated (see DATA_SPEC.md "Crop configuration").
+    """
+    import hashlib
+    import yaml
+
+    doc = yaml.safe_load(FROZEN_CROP.read_text(encoding="utf-8"))
+    split = doc["split"]
+    assert split["path"] == "splits/train_ids.txt"
+    assert split["n_subjects_used"] == 160 and split["n_subjects_failed"] == 0
+
+    train_list = REPO_ROOT / "splits" / "train_ids.txt"
+    digest = hashlib.sha256(train_list.read_bytes()).hexdigest()
+    assert digest == FROZEN_SPLIT_SHA256 == split["sha256"], (
+        "configs/crop.yaml was built from a different splits/train_ids.txt than the "
+        "one committed — regenerate the crop config (scripts/crop_stats.py) and "
+        "rebuild the cache."
+    )
+
+
+def test_committed_split_is_disjoint_and_covers_200_subjects():
+    """The provisional split the frozen box rests on: 160/40, no overlap."""
+    ids = {}
+    for name in ("train", "val"):
+        path = REPO_ROOT / "splits" / f"{name}_ids.txt"
+        ids[name] = [ln.strip() for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(ids["train"]) == 160 and len(ids["val"]) == 40
+    assert not set(ids["train"]) & set(ids["val"])
+    assert len(set(ids["train"]) | set(ids["val"])) == 200
+    assert all(re.fullmatch(r"P\d{4}", s) for group in ids.values() for s in group)

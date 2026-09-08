@@ -6,6 +6,12 @@ sampling → cache**.
 
 Created 2026-09-08. Deadline 2026-09-15.
 
+> **ROLE A IS COMPLETE (2026-09-08).** Every milestone below is ticked and every
+> check has been run on the real data. The handover for B/C/D is
+> `docs/HANDOFF_A.md`; the verified facts are `DATA_SPEC.md`. Anything still open
+> is optional and listed under **Post-completion / on request**. What Alfred is
+> on the hook for tomorrow is under **Wednesday integration support**.
+
 ## 1. Verify the data conventions (blocking most of the rest)
 - [x] `scripts/inspect_dataset.py` written (aggregates only, never per-point dumps)
 - [x] Run it on the real data and fill in `DATA_SPEC.md` (Alfred, 2026-09-08):
@@ -30,8 +36,16 @@ Created 2026-09-08. Deadline 2026-09-15.
         left X[-37.01,14.29] Y[52.10,107.80] Z[-38.01,43.56]; right
         X[-40.39,12.49] Y[-106.0,-54.68] Z[-35.96,44.68]; median ear extent
         ~35 x 24 x 60 mm (Z is the long axis) -> `DATA_SPEC.md`
-  - [ ] within-contour point order; contour index ranges really sequential (§3)
-  - [ ] left and right use the same ordering? (§3)
+  - [x] left and right use the same ordering? **YES** (Alfred, 2026-09-08,
+        `check_mirror.py`): under the winning configuration the four contour
+        means are 0.0903 / 0.0811 / 0.0968 / 0.0869 canonical units — a spread of
+        only 0.0157, against the 0.4287 that separates mirror from no-mirror. No
+        contour is indexed in opposite directions on the two sides.
+  - [~] within-contour point order; contour index ranges really sequential —
+        NOT directly measured. The mirror check is only sensitive to left-vs-right
+        *disagreement*, so it cannot see an order shared by both sides. Nothing
+        in the pipeline depends on it (Role A never reorders landmarks) — moved
+        to **Post-completion / on request**.
 
 ## 2. Raw loaders — `src/data.py`
 - [x] `RawSubject` dataclass (frozen interface, see `docs/HANDOFF_A.md`)
@@ -66,7 +80,10 @@ Created 2026-09-08. Deadline 2026-09-15.
       draws both crop boxes as wireframes on the head view and plots the cropped
       points per side (prints crop vertex count + landmarks-inside-box count).
       Smoke-tested on synthetic data only.
-- [ ] Plot 5–10 subjects, eyeball crop/ordering, feed findings back into §1
+- [~] Plot 5–10 subjects, eyeball crop/ordering — NOT done. Everything it would
+      have caught was settled numerically instead (85/85 landmarks inside the box
+      on all 40 held-out subjects; contour spread 0.0157). Moved to
+      **Post-completion / on request**.
 
 ## 4. Ear crop — `src/geometry.py`
 - [x] `CropConfig` + `crop_ear(raw, side, cfg)` with QA dict
@@ -138,12 +155,21 @@ Created 2026-09-08. Deadline 2026-09-15.
       one subject, two viewing angles). B and C are an exact tie by construction
       — the run decides mirror vs no mirror. **Changes no default**: if the
       default loses it shouts and exits 0. Synthetic tests only; not yet run.
-- [ ] **Alfred: run `python scripts/check_mirror.py --subject-list
-      splits/train_ids.txt`** and paste the verdict into the PENDING block under
-      `DATA_SPEC.md` → "Mirror". This is the last open assumption in §5.
-- [ ] Visual check of the canonicalised ears themselves (§3) — the sign
-      convention is confirmed numerically, the picture is not
-      (`outputs/mirror_check.png` from the run above covers the canonical frame)
+- [x] **Alfred ran `scripts/check_mirror.py` (2026-09-08, 40 training
+      subjects)** — verdict recorded in `DATA_SPEC.md` → "Mirror". Mirror beats
+      no-mirror **0.0882 vs 0.5169 canonical (4.90 vs 28.74 mm), a 5.86x
+      margin**; B and C tied exactly, as predicted by construction, so
+      `mirror_side="right"`, `mirror_axis=1` are **RETAINED** and the cache does
+      not need rebuilding. Per-contour means 0.0903 / 0.0811 / 0.0968 / 0.0869,
+      **spread 0.0157** → left and right landmark orderings are anatomically
+      matched, so **a SINGLE SHARED canonical template is valid for Role C**.
+      The 0.0882 residual is genuine inter-ear asymmetry plus ~2.6 mm X /
+      1.6 mm Z crop-frame mismatch, not a correspondence error. Worst subjects
+      P0040, P0004, P0002, P0035, P0010. **This was the last open assumption in
+      §5 — it is closed.**
+- [~] Visual check of the canonicalised ears themselves (§3) — not done; the
+      sign convention is confirmed numerically on all 200 subjects and the mirror
+      verdict is 5.86x wide. Moved to **Post-completion / on request**.
 
 ## 6. Sampling
 - [x] `sample_points(points, normals, n=2048, seed=0)` — deterministic
@@ -178,14 +204,139 @@ Created 2026-09-08. Deadline 2026-09-15.
       `src.cache.load_cached_ear` / `list_cached`, key table in
       `docs/HANDOFF_A.md`).
 
+## Post-completion / on request
+
+Nothing here blocks B, C or D. Each is optional; Alfred runs it if asked.
+
+- **Full 160-subject mirror run.** The verdict came from 40 of the 160 training
+  subjects. The margin is 5.86x, so more subjects will not flip it — but the
+  per-contour spread and the worst-subject list would firm up.
+  `python scripts/check_mirror.py --subject-list splits/train_ids.txt` (no
+  `--limit`). ~4x the runtime of the run already done.
+- **Visual QA of crops and canonical ears.** `scripts/plot_ear.py --subject
+  P0001 --crop configs/crop.yaml` on 5–10 subjects, plus
+  `outputs/mirror_check.png` from the mirror run. Both were superseded by
+  numeric checks; a picture would only be a second opinion.
+- **Within-contour point order.** Never directly measured. Nothing in Role A
+  depends on it — the pipeline never reorders landmarks — but Role C would need
+  it if it ever wanted to resample a contour by arc length.
+- **Normals — NOT AVAILABLE, not a TODO.** Verified on all 200 meshes: not one
+  PLY declares `nx/ny/nz`. `RawSubject.normals` is `None` throughout and no
+  normal feature channel exists anywhere. `crop_ear` / `sample_points` /
+  `canonicalize_ear` still carry normals through correctly (mirrored on the flip
+  axis) if a future dataset ever has them; do **not** synthesise them with
+  `trimesh.vertex_normals`.
+- **FPS (farthest-point) sampling — not needed, and out of scope.** Uniform
+  random sampling of 2048 points is fine here: the smallest crop over all 400
+  ears is 10260 vertices, so every draw is without replacement with >= 5x
+  headroom. `CLAUDE.md` also rules FPS out without a prior decision. If Role B
+  ever shows a coverage problem, this is the first thing to try.
+- **`requirements.txt`.** The repo has no dependency file. Direct third-party
+  imports across `src/` + `scripts/` are `numpy`, `trimesh`, `pyyaml`,
+  `matplotlib` (plots only) and `pytest`. The README's Role A section lists the
+  pip line; a real requirements file is a team-level call, not Role A's.
+
+## Wednesday integration support (2026-09-09) — what Alfred is on the hook for
+
+When Role D wires the pipeline end to end, Role A owes:
+
+1. **Answering interface questions from `docs/HANDOFF_A.md` first.** Frozen
+   signatures in `src/geometry.py` and `src/data.py` change only on Alfred's
+   say-so. If D needs a signature changed, that is a conversation, not a patch.
+2. **The inference path is exactly three calls**, and Alfred confirms D uses
+   them: `load_mesh(path)` -> `canonicalize_ear(raw, side, load_crop_config(side))`
+   -> model -> `inverse_transform_points(pred, ear.transform)`. Mesh + frozen
+   config only. If anything in D's path reads a landmark file at inference time,
+   that is a leak and Alfred blocks it.
+3. **Running anything that touches the real data.** Per `CLAUDE.md` only Alfred
+   does that — D's end-to-end smoke run on real subjects, any re-run of the five
+   checks, and any cache rebuild go through Alfred, who reports the numbers back.
+4. **Re-freezing on a split change.** If Role C ratifies a different split, the
+   order is fixed: `crop_stats.py --subject-list <new train list>` ->
+   `check_crop_all.py --subject-list <new val list>` -> `preprocess.py` on both
+   splits with `--overwrite`. `configs/crop.yaml` must be regenerated *before*
+   the cache; every npz stores the crop sha256, so a stale pairing is detected,
+   not silently used.
+5. **Diagnosing cache-read failures.** `load_cached_ear` raises `ValueError` on a
+   wrong `schema_version`, a missing key, or a stored `subject_id`/`side` that
+   disagrees with the filename — those are almost always a partial or
+   wrong-policy rebuild, and Alfred re-runs `preprocess.py --overwrite`.
+6. **Sanity numbers D will want on hand:** 1 canonical unit ~55 mm (1 mm ~ 0.018
+   canonical), predictions should land inside [-1.5, 1.5] and in practice inside
+   [-0.7, 0.7]; anything outside that means the wrong side, the wrong transform,
+   or an untrained model. Round-trip error through `ear.transform` is 7.1e-15 mm,
+   so any millimetre-scale error at the end is the model, never the geometry.
+
 ## Open questions for Alfred
 - PyYAML is used for `configs/crop.yaml` (already installed in the venv, 6.0.3);
-  add it to the requirements file when one exists.
-- The workspace is not a git repository yet, so `.gitignore` could not be
-  verified with `git status`. Before `git init`, note that the dataset folder,
-  its zip and `*.csv` are now ignored.
+  see the `requirements.txt` note under **Post-completion / on request**.
+- **From the final audit — three decisions Alfred should make (none blocking):**
+  1. `ear_seed` lives in `scripts/preprocess.py`, so a cached ear cannot be
+     reproduced from the `src` package alone. Move it into `src/` (touches a
+     frozen module), or is importing from `scripts` acceptable for B/C/D?
+  2. Drop `generated:` from `configs/crop.yaml` to make future freezes
+     byte-reproducible? NOT done here on purpose: rewriting the committed
+     crop.yaml would change its sha256 and invalidate all 400 cached ears. This
+     is a change for the next freeze, not for the frozen artefact.
+  3. Is Role D expected to call `canonicalize_ear` with the default `seed=0` at
+     inference, i.e. do train and inference draws intentionally differ? (They
+     do today, and nothing depends on them matching.)
+- Reviewer nice-to-haves left as-is: `CONTOURS` is duplicated between
+  `plot_ear.py:50` and `check_mirror.py:158` (only the latter guards that it
+  tiles 0..85); `inspect_dataset.py:508` re-reads `HUAWEI_DATA_ROOT` instead of
+  using `src.data.DATA_ROOT`, and its `main()` takes no `argv`, which is why it
+  is the one script with no test entry point; `preprocess.py:76` imports the
+  private `_resolve_config_path` across the module boundary; `src/data.py:187`
+  reads trimesh's private `metadata["_ply_raw"]`, so a newer trimesh could break
+  `tests/test_data.py` on a fresh clone. None affect a frozen interface.
+- `.gitignore` is now verified against a real repository (branch `role-a`): the
+  dataset folder, its zip, `*.csv`, `cache/`, `outputs/` and `*.npz`/`*.ply` are
+  all ignored, and `git status` is clean. Role A never commits or pushes.
 
 ## Done log
+- 2026-09-08 — **ROLE A CLOSED OUT.** Alfred ran `scripts/check_mirror.py` on 40
+  training subjects and the last open assumption is settled: mirror beats
+  no-mirror **0.0882 vs 0.5169 canonical (4.90 vs 28.74 mm), a 5.86x margin**,
+  with B and C an exact tie as the script predicted by construction, so
+  `mirror_side="right"` / `mirror_axis=1` are RETAINED and the cache stands. The
+  per-contour means (0.0903 / 0.0811 / 0.0968 / 0.0869, **spread 0.0157**) also
+  answer the standing "do left and right use the same ordering?" question —
+  they do, so **one shared canonical template is valid for Role C**, with no
+  per-side template or permutation. The 0.0882 residual is genuine inter-ear
+  asymmetry plus ~2.6 mm X / 1.6 mm Z crop-frame mismatch (the per-axis frame
+  floor the script prints), not a correspondence error, and none of it may be
+  subtracted from the metric. Worst subjects P0040, P0004, P0002, P0035, P0010.
+  Recorded in `DATA_SPEC.md` → "Mirror" (the PENDING block is gone) and in the
+  "Landmark ordering" table. `docs/HANDOFF_A.md` rewritten as the complete
+  handover in 57 lines (frozen signatures, npz schema, the two `src.cache`
+  functions, frozen crop numbers, canonical envelope and scale, the mirror
+  finding and its consequence for C, the exact cache-rebuild commands, and every
+  verification with its number). `README.md` gained a Role A section — what Role
+  A provides, the five verification scripts and what each proves, and the exact
+  fresh-clone command sequence — with no other role's section touched. Leftovers
+  moved to **Post-completion / on request** (full 160-subject mirror run; visual
+  QA; within-contour order; normals — not present in the source data at all;
+  FPS — not needed and out of scope; no `requirements.txt`), and a **Wednesday
+  integration support** section records what Alfred owes Role D.
+  senior-reviewer final audit: leakage **disproved** (it independently re-hashed
+  `splits/train_ids.txt` and confirmed the digest in `configs/crop.yaml` matches,
+  so no val subject touched the frozen box), then **FIX-FIRST** on four items,
+  all now applied: (a) `crop_stats.py` stamps a `generated:` timestamp, so
+  re-running it yields a different sha256 even with identical bounds — and every
+  cached ear stores that sha256, so the README's reproduce block would have
+  invalidated all 400 cache files; the block now uses `--dry-run` and says why;
+  (b) `docs/HANDOFF_A.md` never stated the **per-ear seed** rule, so B/C calling
+  `canonicalize_ear(raw, side, cfg)` at the default `seed=0` would get a
+  different draw than the cache and think the cache was wrong — the handover now
+  spells out `seed=ear.qa["ear_seed"]`; (c) `scripts/plot_ear.py:158` labelled
+  the Y axis "Y (right +)", contradicting the VERIFIED +Y = subject's LEFT, in
+  the very tool left for the outstanding visual QA — relabelled; (d) `DATA_SPEC.md`
+  claimed the 15 mm margin floor binds everywhere except left Z, but right Z is
+  15.0016 — corrected. Also added, per the reviewer: four data-free regression
+  tests in `tests/test_geometry.py` pinning the committed `configs/crop.yaml`
+  (bounds, freeze criterion, split provenance sha256, and the 160/40 disjoint
+  split) — the one artefact every downstream role depends on previously had no
+  coverage at all. **169 tests pass.**
 - 2026-09-08 — **Cache numbers recorded; `scripts/check_mirror.py` written.**
   `DATA_SPEC.md` now carries Alfred's real-run figures: cache 400 files /
   11.6 MB, crop vertices min 10260 / median ~25000 / max 66654 over all 400
