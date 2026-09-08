@@ -12,14 +12,31 @@ FLOAT_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
 
 def parse_landmark_file(path: Path) -> np.ndarray:
-    pts = []
+    import re
+    FLOAT_RE = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+    rows = []
     for line in path.read_text(encoding="utf-8").splitlines():
         nums = [float(x) for x in FLOAT_RE.findall(line)]
-        if len(nums) >= 3:
-            pts.append(nums[-3:])  # handles "idx [x y z]" format
-    arr = np.asarray(pts, dtype=np.float64)
-    if arr.shape != (85, 3):
-        raise ValueError(f"{path.name} parsed shape {arr.shape}, expected (85,3)")
+        if len(nums) >= 4:
+            idx = int(round(nums[0]))
+            xyz = nums[1:4]
+        elif len(nums) == 3:
+            idx = len(rows)  # fallback if no explicit index
+            xyz = nums
+        else:
+            continue
+        rows.append((idx, xyz))
+
+    if len(rows) != 85:
+        raise ValueError(f"{path.name}: expected 85 rows, got {len(rows)}")
+
+    idxs = [i for i, _ in rows]
+    if sorted(idxs) != list(range(85)):
+        raise ValueError(f"{path.name}: index set not exactly 0..84")
+
+    rows.sort(key=lambda t: t[0])  # enforce canonical order
+    arr = np.asarray([xyz for _, xyz in rows], dtype=np.float64)
     return arr
 
 
@@ -67,6 +84,12 @@ def main():
         "all_ears_mean": metrics["all_ears"]["mean"],
         "all_ears_median": metrics["all_ears"]["median"],
         "all_ears_p95": metrics["all_ears"]["p95"],
+        "left_mean": metrics["left"]["mean"],
+        "right_mean": metrics["right"]["mean"],
+        "left_median": metrics["left"]["median"],
+        "right_median": metrics["right"]["median"],
+        "left_p95": metrics["left"]["p95"],
+        "right_p95": metrics["right"]["p95"],
     }, indent=2), encoding="utf-8")
 
     out_tpl = Path(args.out_template_npz)

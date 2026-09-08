@@ -13,8 +13,7 @@ Use this file for every meaningful training/evaluation run.
 - Validation mean: 6.3932424711307645
 - Median: 6.159525629613377
 - P95: 11.46832211778311
-- Notes: Built mean left/right templates from TRAIN subjects only; evaluated on VAL subjects only. Output artifacts: outputs/role_c/b0_metrics.json and outputs/role_c/global_template.npz. Decision: KEEP (baseline + fallback).
-
+- Notes: Built mean left/right templates from TRAIN subjects only; evaluated on VAL subjects only. Output artifacts: outputs/role_c/b0_metrics.json and outputs/role_c/global_template.npz. Left has heavier high-error tail (p95) than right - more extreme outliers.
 
 
 ### B1 — Canonical template
