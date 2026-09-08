@@ -318,3 +318,496 @@ def test_main_requires_an_existing_subject_list(tmp_path, monkeypatch):
 
     assert code == 1
     assert not out.exists()
+
+
+# --------------------------------------------------------------------------- #
+# check_roundtrip / check_crop_all
+#
+# Both scripts only ever run against data these tests may not touch, so the
+# logic is pinned here on a synthetic two-ear "subject": a grid of vertices in
+# each side's crop box and 85 fake landmarks inside it. What is being checked is
+# the scripts' own arithmetic and verdicts, not numpy's.
+# --------------------------------------------------------------------------- #
+
+import inspect  # noqa: E402
+
+import check_crop_all  # noqa: E402
+import check_roundtrip  # noqa: E402
+from src.data import RawSubject  # noqa: E402
+from src.geometry import CropConfig, N_LANDMARKS, canonicalize_ear  # noqa: E402
+
+LEFT_LO, LEFT_HI = np.array([0.0, 0.0, 0.0]), np.array([10.0, 10.0, 20.0])
+RIGHT_LO, RIGHT_HI = np.array([0.0, -10.0, 0.0]), np.array([10.0, 0.0, 20.0])
+
+
+def _grid(lo: np.ndarray, hi: np.ndarray, n: int = 11) -> np.ndarray:
+    """``n**3`` points filling the box, corners included."""
+    axes = [np.linspace(lo[a], hi[a], n) for a in range(3)]
+    return np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+
+
+def _fake_landmarks(seed: int = 0, lo=LEFT_LO, hi=LEFT_HI) -> np.ndarray:
+    """85 pseudo-random points strictly inside a box."""
+    rng = np.random.default_rng(seed)
+    return lo + (hi - lo) * (0.1 + 0.8 * rng.random((N_LANDMARKS, 3)))
+
+
+def _write_crop_yaml(tmp_path: Path, min_vertices: int = 500) -> Path:
+    path = tmp_path / "crop.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "freeze_criterion_passed": True,
+                "sides": {
+                    "left": {"lo": LEFT_LO.tolist(), "hi": LEFT_HI.tolist(),
+                             "min_vertices": min_vertices},
+                    "right": {"lo": RIGHT_LO.tolist(), "hi": RIGHT_HI.tolist(),
+                              "min_vertices": min_vertices},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _fake_ears(
+    monkeypatch,
+    module,
+    subjects: list[str],
+    landmarks: dict[str, dict[str, np.ndarray]] | None = None,
+    grid_n: int = 11,
+    failing: set[str] | None = None,
+) -> None:
+    """Point one script module's loaders at synthetic two-ear subjects."""
+    vertices = np.vstack([_grid(LEFT_LO, LEFT_HI, grid_n), _grid(RIGHT_LO, RIGHT_HI, grid_n)])
+    failing = failing or set()
+
+    def fake_load_mesh(path):
+        sid = Path(path).name
+        if sid in failing:
+            raise OSError("synthetic mesh failure")
+        return RawSubject(sid, vertices.copy(), None, None, Path(path))
+
+    def fake_load_subject_landmarks(sid, root):
+        if landmarks is not None:
+            return landmarks[sid]
+        return {
+            "left": _fake_landmarks(seed=abs(hash(sid)) % 1000),
+            "right": _fake_landmarks(seed=abs(hash(sid)) % 1000, lo=RIGHT_LO, hi=RIGHT_HI),
+        }
+
+    monkeypatch.setattr(module, "list_subjects", lambda root: list(subjects))
+    monkeypatch.setattr(module, "mesh_path", lambda sid, root=None: Path(sid))
+    monkeypatch.setattr(module, "load_mesh", fake_load_mesh)
+    monkeypatch.setattr(module, "load_subject_landmarks", fake_load_subject_landmarks)
+
+
+def _subject_list(tmp_path: Path, subjects: list[str]) -> Path:
+    path = tmp_path / "ids.txt"
+    path.write_text("\n".join(subjects) + "\n", encoding="utf-8")
+    return path
+
+
+# --- check_roundtrip -------------------------------------------------------- #
+
+def test_ear_roundtrip_is_exact_and_mesh_derived():
+    crop_points = _grid(LEFT_LO, LEFT_HI)
+    landmarks = _fake_landmarks(seed=1)
+
+    error, canonical, scale = check_roundtrip.ear_roundtrip(landmarks, crop_points, "left")
+
+    assert error < 1e-9
+    assert scale == pytest.approx(10.0)          # half the largest extent (Z = 20)
+    # Landmarks inside the crop box land inside the canonical unit-ish box.
+    assert np.max(np.abs(canonical)) <= 1.0
+
+
+def test_ear_roundtrip_mirrors_only_the_mirror_side():
+    left_points, right_points = _grid(LEFT_LO, LEFT_HI), _grid(RIGHT_LO, RIGHT_HI)
+    # The same ear geometry either side of Y=0, so canonical Y must agree in
+    # sign once the right side has been mirrored.
+    left_lm = _fake_landmarks(seed=2)
+    right_lm = left_lm * np.array([1.0, -1.0, 1.0])
+
+    _, left_canon, _ = check_roundtrip.ear_roundtrip(left_lm, left_points, "left")
+    _, right_canon, _ = check_roundtrip.ear_roundtrip(right_lm, right_points, "right")
+
+    assert check_roundtrip.MIRROR_SIDE == "right"
+    assert np.allclose(left_canon, right_canon)
+
+
+def test_side_accumulator_tracks_envelope_and_the_outside_band():
+    acc = check_roundtrip.SideAccumulator()
+    inside = np.zeros((3, 3))
+    inside[0] = [0.5, -0.25, 1.0]
+    outside = np.zeros((3, 3))
+    outside[0] = [0.0, 0.0, check_roundtrip.CANONICAL_LIMIT + 0.1]
+
+    acc.add("P0001", 1e-15, inside, scale=10.0, n_crop=1000)
+    acc.add("P0002", 1e-12, outside, scale=11.0, n_crop=2000)
+
+    assert acc.n_ears == 2
+    assert acc.max_error == 1e-12 and acc.worst_subject == "P0002"
+    assert acc.canonical_lo == pytest.approx([0.0, -0.25, 0.0])
+    assert acc.canonical_hi == pytest.approx([0.5, 0.0, check_roundtrip.CANONICAL_LIMIT + 0.1])
+    assert acc.outside_ids == ["P0002"]
+
+
+def test_check_roundtrip_main_passes_on_exact_data(tmp_path, monkeypatch, capsys):
+    subjects = ["P0001", "P0002", "P0003"]
+    _fake_ears(monkeypatch, check_roundtrip, subjects)
+
+    code = check_roundtrip.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "=> PASS" in out
+    assert "ears checked: 6" in out
+
+
+def test_check_roundtrip_main_fails_on_an_impossible_tolerance(tmp_path, monkeypatch, capsys):
+    # A negative tolerance no round-trip can meet: proves the verdict is driven
+    # by the measured error, not hard-coded to PASS.
+    subjects = ["P0001"]
+    _fake_ears(monkeypatch, check_roundtrip, subjects)
+
+    code = check_roundtrip.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+        "--tol", "-1",
+    ])
+
+    assert code == 1
+    assert "=> FAIL" in capsys.readouterr().out
+
+
+def test_check_roundtrip_main_fails_when_an_ear_cannot_be_checked(tmp_path, monkeypatch, capsys):
+    subjects = ["P0001", "P0002"]
+    _fake_ears(monkeypatch, check_roundtrip, subjects, failing={"P0002"})
+
+    code = check_roundtrip.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "could not be checked" in out and "P0002" in out
+
+
+def test_check_roundtrip_main_refuses_a_rejected_crop_config(tmp_path, monkeypatch, capsys):
+    subjects = ["P0001"]
+    _fake_ears(monkeypatch, check_roundtrip, subjects)
+    cfg = _write_crop_yaml(tmp_path)
+    doc = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    doc["freeze_criterion_passed"] = False
+    cfg.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    code = check_roundtrip.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(cfg),
+    ])
+
+    assert code == 1
+    assert "crop config" in capsys.readouterr().out
+
+
+# --- check_crop_all --------------------------------------------------------- #
+
+def test_count_landmarks_inside_matches_crop_ear_including_the_boundary():
+    cfg = CropConfig(side="left", lo=LEFT_LO, hi=LEFT_HI)
+    landmarks = np.vstack([
+        LEFT_LO,                                   # on the lower corner: inside
+        LEFT_HI,                                   # on the upper corner: inside
+        0.5 * (LEFT_LO + LEFT_HI),                 # middle: inside
+        LEFT_HI + np.array([0.0, 0.0, 1e-9]),      # a hair above Z: outside
+        LEFT_LO - np.array([1.0, 0.0, 0.0]),       # outside
+    ])
+
+    assert check_crop_all.count_landmarks_inside(landmarks, "left", cfg, "P0001") == 3
+
+
+def test_check_crop_all_main_passes_when_every_landmark_is_inside(tmp_path, monkeypatch, capsys):
+    subjects = ["P0001", "P0002"]
+    _fake_ears(monkeypatch, check_crop_all, subjects)
+
+    code = check_crop_all.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "=> PASS" in out
+    assert "ears losing a GT landmark: 0" in out
+
+
+def test_check_crop_all_main_fails_and_names_a_truncated_ear(tmp_path, monkeypatch, capsys):
+    subjects = ["P0001", "P0002"]
+    bad = _fake_landmarks(seed=3)
+    bad[7] = LEFT_HI + np.array([0.0, 0.0, 5.0])          # one landmark above the box
+    landmarks = {
+        "P0001": {"left": _fake_landmarks(seed=4),
+                  "right": _fake_landmarks(seed=4, lo=RIGHT_LO, hi=RIGHT_HI)},
+        "P0002": {"left": bad,
+                  "right": _fake_landmarks(seed=5, lo=RIGHT_LO, hi=RIGHT_HI)},
+    }
+    _fake_ears(monkeypatch, check_crop_all, subjects, landmarks=landmarks)
+
+    code = check_crop_all.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "ears losing a GT landmark: 1" in out
+    assert f"worst ear kept {N_LANDMARKS - 1}/{N_LANDMARKS}" in out
+    assert "P0002" in out and "truncates" in out
+
+
+def test_check_crop_all_main_fails_on_a_suspicious_crop(tmp_path, monkeypatch, capsys):
+    subjects = ["P0001"]
+    _fake_ears(monkeypatch, check_crop_all, subjects)
+
+    # min_vertices above the synthetic crop size (11**3 = 1331 per side).
+    code = check_crop_all.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(_write_crop_yaml(tmp_path, min_vertices=5000)),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "suspicious crops: 2" in out
+    assert "suspiciously small" in out
+
+
+def test_check_crop_all_main_flags_crops_too_small_to_sample(tmp_path, monkeypatch, capsys):
+    subjects = ["P0001"]
+    # 8**3 = 512 vertices per side: above min_vertices=500, below N_POINTS=2048,
+    # so it is not suspicious but would force sampling with replacement.
+    _fake_ears(monkeypatch, check_crop_all, subjects, grid_n=8)
+
+    code = check_crop_all.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "WITH replacement): 1/1" in out
+
+
+# --- reviewer round 5: unchecked ears, an inexact inverse, split provenance -- #
+
+def test_check_roundtrip_main_fails_when_a_listed_subject_has_no_mesh(
+    tmp_path, monkeypatch, capsys
+):
+    listed = ["P0001", "P0002", "P0003"]
+    _fake_ears(monkeypatch, check_roundtrip, listed)
+    # Only two of the three listed subjects actually exist under --root.
+    monkeypatch.setattr(check_roundtrip, "list_subjects", lambda root: ["P0001", "P0002"])
+
+    code = check_roundtrip.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, listed)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+
+    # An exact round-trip on the ears that were reached must NOT hide the fact
+    # that a third of the run never happened.
+    assert code == 1
+    assert "no mesh under" in out and "P0003" in out
+    assert "=> FAIL" in out
+
+
+def test_check_roundtrip_allow_failures_lets_the_verdict_stand(tmp_path, monkeypatch, capsys):
+    listed = ["P0001", "P0002", "P0003"]
+    _fake_ears(monkeypatch, check_roundtrip, listed)
+    monkeypatch.setattr(check_roundtrip, "list_subjects", lambda root: ["P0001", "P0002"])
+
+    code = check_roundtrip.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, listed)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+        "--allow-failures",
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "PASS (--allow-failures)" in out
+
+
+def test_check_roundtrip_limit_does_not_invent_missing_subjects(tmp_path, monkeypatch, capsys):
+    listed = ["P0001", "P0002", "P0003"]
+    _fake_ears(monkeypatch, check_roundtrip, listed)
+    monkeypatch.setattr(check_roundtrip, "list_subjects", lambda root: ["P0001", "P0002"])
+
+    # --limit 2 stops before P0003, so P0003 is out of scope, not missing.
+    code = check_roundtrip.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, listed)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+        "--limit", "2",
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "no mesh under" not in out
+    assert "--limit 2" in out
+
+
+def test_check_roundtrip_main_detects_an_inexact_inverse(tmp_path, monkeypatch, capsys):
+    """The verdict must follow the measured error, not the happy path."""
+    subjects = ["P0001"]
+    _fake_ears(monkeypatch, check_roundtrip, subjects)
+    real_inverse = check_roundtrip.inverse_transform_points
+    monkeypatch.setattr(
+        check_roundtrip,
+        "inverse_transform_points",
+        lambda points, t: real_inverse(points, t) + 1e-3,
+    )
+
+    code = check_roundtrip.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "1.000e-03 mm" in out
+    assert "NOT exactly invertible" in out
+
+
+def test_ear_roundtrip_goes_through_the_serialised_transform(monkeypatch):
+    """The inverse must use the transform as the cache will hand it back."""
+    seen: list[dict] = []
+    real_from_dict = check_roundtrip.EarTransform.from_dict
+
+    def spy(d):
+        seen.append(d)
+        return real_from_dict(d)
+
+    monkeypatch.setattr(check_roundtrip.EarTransform, "from_dict", staticmethod(spy))
+    check_roundtrip.ear_roundtrip(_fake_landmarks(seed=9), _grid(LEFT_LO, LEFT_HI), "left")
+
+    assert len(seen) == 1
+    assert set(seen[0]) == {"centre", "scale", "mirror_axis"}
+
+
+def test_check_crop_all_main_fails_when_a_listed_subject_has_no_mesh(
+    tmp_path, monkeypatch, capsys
+):
+    listed = ["P0001", "P0002"]
+    _fake_ears(monkeypatch, check_crop_all, listed)
+    monkeypatch.setattr(check_crop_all, "list_subjects", lambda root: ["P0001"])
+
+    code = check_crop_all.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, listed)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 1
+    assert "no mesh under" in out and "P0002" in out
+
+
+def test_check_crop_all_warns_when_run_on_the_split_the_box_came_from(
+    tmp_path, monkeypatch, capsys
+):
+    subjects = ["P0001"]
+    _fake_ears(monkeypatch, check_crop_all, subjects)
+    ids = _subject_list(tmp_path, subjects)
+    cfg = _write_crop_yaml(tmp_path)
+    doc = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    doc["split"] = {"path": "splits/train_ids.txt", "sha256": crop_stats.sha256_file(ids)}
+    cfg.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    code = check_crop_all.main([
+        "--root", str(tmp_path), "--subject-list", str(ids), "--crop-config", str(cfg),
+    ])
+    out = capsys.readouterr().out
+
+    # Still a PASS - the box does hold on these ears - but Alfred is told the
+    # PASS is true by construction and proves nothing about unseen subjects.
+    assert code == 0
+    assert "SAME subject list" in out
+
+
+def test_check_crop_all_does_not_warn_on_a_held_out_split(tmp_path, monkeypatch, capsys):
+    subjects = ["P0001"]
+    _fake_ears(monkeypatch, check_crop_all, subjects)
+    cfg = _write_crop_yaml(tmp_path)
+    doc = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    doc["split"] = {"path": "splits/train_ids.txt", "sha256": "0" * 64}
+    cfg.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    code = check_crop_all.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, subjects)),
+        "--crop-config", str(cfg),
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "SAME subject list" not in out
+
+
+def test_check_crop_all_allow_failures_lets_the_verdict_stand(tmp_path, monkeypatch, capsys):
+    listed = ["P0001", "P0002"]
+    _fake_ears(monkeypatch, check_crop_all, listed)
+    monkeypatch.setattr(check_crop_all, "list_subjects", lambda root: ["P0001"])
+
+    code = check_crop_all.main([
+        "--root", str(tmp_path),
+        "--subject-list", str(_subject_list(tmp_path, listed)),
+        "--crop-config", str(_write_crop_yaml(tmp_path)),
+        "--allow-failures",
+    ])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "unchecked, ignored via --allow-failures" in out
+
+
+def test_check_crop_all_repeats_the_same_split_warning_in_the_verdict(
+    tmp_path, monkeypatch, capsys
+):
+    subjects = ["P0001"]
+    _fake_ears(monkeypatch, check_crop_all, subjects)
+    ids = _subject_list(tmp_path, subjects)
+    cfg = _write_crop_yaml(tmp_path)
+    doc = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+    doc["split"] = {"path": "splits/train_ids.txt", "sha256": crop_stats.sha256_file(ids)}
+    cfg.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    check_crop_all.main([
+        "--root", str(tmp_path), "--subject-list", str(ids), "--crop-config", str(cfg),
+    ])
+    verdict = capsys.readouterr().out.split("=== FROZEN CROP ON HELD-OUT SUBJECTS ===")[1]
+
+    # A verdict read off the tail of a long log must carry the caveat too.
+    assert "true by construction" in verdict
+
+
+def test_check_roundtrip_convention_matches_the_pipeline():
+    """The script's frozen convention must be canonicalize_ear's, not its own."""
+    params = inspect.signature(canonicalize_ear).parameters
+
+    assert check_roundtrip.MIRROR_SIDE == params["mirror_side"].default
+    assert check_roundtrip.MIRROR_AXIS == params["mirror_axis"].default

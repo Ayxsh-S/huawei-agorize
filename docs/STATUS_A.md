@@ -9,7 +9,9 @@ Created 2026-09-08. Deadline 2026-09-15.
 ## 1. Verify the data conventions (blocking most of the rest)
 - [x] `scripts/inspect_dataset.py` written (aggregates only, never per-point dumps)
 - [x] Run it on the real data and fill in `DATA_SPEC.md` (Alfred, 2026-09-08):
-  - [x] units mm, global bbox X/Y/Z ranges, vertex-count range (0.28M–0.84M)
+  - [x] units mm, global bbox X/Y/Z ranges, vertex-count range (full run,
+        200 meshes: 0.11M–0.93M, median 0.33M; the earlier 0.28M–0.84M came
+        from a 20-mesh sample)
   - [x] faces present, NO normals, float xyz + uchar rgba in the PLYs
   - [x] `mesh/P<id>.ply`, `landmarks/P<id>_{left,right}_ear_landmarks.csv`,
         subject ID = full `"P0001"` string, 200 subjects, IDs non-contiguous
@@ -24,7 +26,10 @@ Created 2026-09-08. Deadline 2026-09-15.
         OPPOSITE of the challenge page; `DATA_SPEC.md` and the
         `inspect_dataset.py` sanity check now follow the data. `mirror_axis`
         stays 1 (Y) and `mirror_side` is unchanged.
-  - [ ] left/right landmark bboxes (section 6 of the same run)
+  - [x] left/right landmark bboxes (Alfred, 2026-09-08, all 200 subjects):
+        left X[-37.01,14.29] Y[52.10,107.80] Z[-38.01,43.56]; right
+        X[-40.39,12.49] Y[-106.0,-54.68] Z[-35.96,44.68]; median ear extent
+        ~35 x 24 x 60 mm (Z is the long axis) -> `DATA_SPEC.md`
   - [ ] within-contour point order; contour index ranges really sequential (§3)
   - [ ] left and right use the same ordering? (§3)
 
@@ -50,7 +55,9 @@ Created 2026-09-08. Deadline 2026-09-15.
       CRLF/LF, wrong line count, bad-line numbering, index mismatch, non-layout
       lines, "errors never quote the line", side mismatch, ID rule on mesh and
       landmark filenames, `list_subjects` ignores stray files
-- [ ] Run the loaders on real data once (`inspect_dataset.py` does this)
+- [x] Run the loaders on real data once (Alfred, 2026-09-08): 200/200 meshes
+      loaded, 0 failures, no stored normals in any file; 400/400 landmark
+      CSVs parsed to [85,3] float64 on the one verified layout
 
 ## 3. QA visualisation
 - [x] `scripts/plot_ear.py` — grey mesh points (subsampled to 20k) + landmarks
@@ -73,33 +80,80 @@ Created 2026-09-08. Deadline 2026-09-15.
       the 5 worst subjects, the min LOO headroom per side/axis and the freeze
       criterion (min LOO headroom > 0 on every axis, both sides). The old
       by-construction "outside the envelope" check is gone — it proved nothing.
-      Smoke-tested on a synthetic root only; **not yet run on real data.**
+      **Run on the real training split 2026-09-08; bounds frozen (see below).**
 - [x] `scripts/make_split.py` — **provisional** subject-level split (Role C owns
       the real one): 160/40, `default_rng(42)`, IDs sorted before shuffling, both
       ears together by construction. Writes `splits/{train,val}_ids.txt` +
       `splits/README.md`. `splits/` is in the repo (IDs only, no data).
-- [ ] Run `make_split.py` on real data → `splits/train_ids.txt` (200 subjects)
+- [x] Run `make_split.py` on real data → `splits/train_ids.txt` (160) +
+      `splits/val_ids.txt` (40); train list sha256 `b2d5ff90...`, recorded in
+      `configs/crop.yaml`. Still the PROVISIONAL Role A split — Role C ratifies.
 - [x] `load_crop_config(side, path="configs/crop.yaml") -> CropConfig`
-- [ ] Run `crop_stats.py --subject-list splits/train_ids.txt` on real data →
-      `configs/crop.yaml`; check the freeze criterion PASSES; copy lo/hi and the
-      LOO headroom into `DATA_SPEC.md`; then **freeze** (inference: mesh + frozen
-      config only)
-- [ ] Validate across all subjects; check the `suspicious` flag catches truncation
+- [x] Run `crop_stats.py --subject-list splits/train_ids.txt` on real data →
+      `configs/crop.yaml` **FROZEN** (Alfred, 2026-09-08, 160 subjects, 0
+      failures). Freeze criterion **PASS**; lo/hi and LOO headroom copied into
+      `DATA_SPEC.md`. From here on, inference = mesh + this config only.
+- [x] `scripts/check_crop_all.py` written — runs the frozen box over a subject
+      list and reports, per side, min/median/max cropped vertex count, suspicious
+      crops, ears with < 85/85 GT landmarks inside, and the offending IDs. Exit 1
+      on any truncated ear or suspicious crop. Synthetic tests only; not yet run.
+- [x] Alfred: run `check_crop_all.py --subject-list splits/val_ids.txt` — the
+      real generalisation test, on the 40 subjects the box was NOT derived from
+      (the LOO headroom is only an estimate of this). **PASSED** (Alfred,
+      2026-09-08): 85/85 landmarks inside on every ear of all 40 held-out
+      subjects, no suspicious crop, min crop 10260 vertices. Recorded in
+      `DATA_SPEC.md`. **`configs/crop.yaml` is now FROZEN.**
 
 ## 5. Canonical transform + inverse — `src/geometry.py`
 - [x] `EarTransform`, `make_transform`, `transform_points_to_canonical`,
       `inverse_transform_points`, `canonicalize_ear`
 - [x] Round-trip tests in `tests/test_geometry.py`
-- [ ] Confirm the mirror axis is Y on real data (visual check, §3)
+- [x] `scripts/check_roundtrip.py` written — builds the transform from the
+      MESH only (frozen crop + `make_transform`), pushes the GT landmarks to
+      canonical and back, and fails (exit 1) above 1e-9 mm. Also reports the
+      canonical envelope of the GT landmarks and how many ears leave
+      [-1.5, 1.5], which is what Role C needs to size the template. Synthetic
+      tests only; not yet run.
+- [x] Alfred: run `check_roundtrip.py` — **PASSED** (Alfred, 2026-09-08): max
+      |inverse(canonical(GT)) - GT| = 7.1e-15 mm (float64 rounding), recorded
+      in `DATA_SPEC.md`.
+- [ ] Alfred: paste the canonical envelope from that run into `DATA_SPEC.md`
+      (it goes to C for the template size)
+- [x] Mirror **axis** confirmed as Y on real data: +Y = subject's left on all
+      200 subjects, so left/right are Y-reflections (`mirror_axis=1`,
+      `mirror_side="right"`)
+- [ ] Visual check of the canonicalised ears themselves (§3) — the sign
+      convention is confirmed numerically, the picture is not
 
 ## 6. Sampling
 - [x] `sample_points(points, normals, n=2048, seed=0)` — deterministic
 - [x] Normals: the PLYs carry none (verified), so no normal feature channel.
       `RawSubject.normals` will always be `None` on real data.
 
-## 7. Processed cache — `scripts/preprocess.py`
-- [ ] Placeholder only. Blocked on frozen crop bounds (§4). Writes
-      `cache/<subject>_<side>.npz`; never committed.
+## 7. Processed cache — `scripts/preprocess.py` + `src/cache.py`
+- [x] `src/cache.py` — schema `"1"` in one place: `write_cached_ear` (atomic
+      temp-file + rename), `load_cached_ear(path) -> CanonicalEar` (transform
+      via `EarTransform.from_dict`, targets in `qa["targets"]`, refuses a wrong
+      schema version / missing key / renamed file), `list_cached(cache_dir) ->
+      [(subject_id, side, path)]`, `cache_path`. B and C never parse npz keys.
+- [x] `scripts/preprocess.py` — `--subject-list` (required) `--out cache/`
+      `--crop configs/crop.yaml` `--n-points 2048` `--seed 0` `[--with-targets]
+      [--overwrite] [--workers N] [--limit N] [--root]`. Per-ear seed =
+      sha256(seed|subject|side) (stored as `ear_seed`); targets verified to
+      invert to < 1e-9 mm through the stored transform or the run ABORTS
+      naming the ear; stale entries (other n_points/seed/crop sha/target
+      policy) fail instead of being skipped; progress every 25 subjects;
+      summary with written/skipped/failed, cache size, min/median/max crop
+      vertices; a suspicious crop (< min_vertices) fails the ear and writes
+      nothing, ears sampled with replacement are written but named; exit 1 on
+      any failure. Synthetic tests only (35 in
+      `tests/test_preprocess.py` + `tests/test_cache.py`, incl. a 2-worker run
+      on an on-disk synthetic root).
+- [x] `docs/HANDOFF_A.md` — exact npz key table + the two `src.cache` functions.
+- [ ] Alfred: `python scripts/preprocess.py --subject-list splits/train_ids.txt
+      --with-targets` and the same for `splits/val_ids.txt`; paste the summary
+      (cache size, crop min/median/max) into `DATA_SPEC.md` and tell B/C the
+      cache is ready.
 
 ## Open questions for Alfred
 - PyYAML is used for `configs/crop.yaml` (already installed in the venv, 6.0.3);
@@ -109,6 +163,86 @@ Created 2026-09-08. Deadline 2026-09-15.
   its zip and `*.csv` are now ignored.
 
 ## Done log
+- 2026-09-08 — **Both real-data checks PASSED, crop config FROZEN, cache
+  built.** Alfred ran `check_roundtrip.py` (max round-trip error 7.1e-15 mm)
+  and `check_crop_all.py --subject-list splits/val_ids.txt` (85/85 landmarks
+  inside on all 40 held-out subjects, no suspicious crop, min crop 10260
+  vertices); both recorded in `DATA_SPEC.md`. `scripts/preprocess.py` is real:
+  `--subject-list` (required) `--out --crop --n-points --seed [--with-targets]
+  [--overwrite] [--workers N] [--limit N] [--root]`; per-ear sampling seed =
+  sha256("seed|subject|side") first 8 bytes, top bit dropped (stored as
+  `ear_seed`, value for (0, P0001, left) pinned by a test); targets are
+  pushed through the mesh-only transform and verified to invert to < 1e-9 mm
+  in float64 through `from_dict(to_dict())` before the float32 cast, else the
+  run ABORTS naming the ear and writes nothing for it; an existing file with
+  another n_points / seed / crop sha256 / target policy (either direction)
+  is a failure, not a skip; suspicious crops fail the ear and are not
+  written; with-replacement ears are written but named; progress every 25
+  subjects; summary with written/skipped/failed, cache size, min/median/max
+  crop vertices per side; stray temp files swept; exit 1 on any failure.
+  New `src/cache.py` owns schema "1" (`write_cached_ear` atomic,
+  `load_cached_ear` -> `CanonicalEar` with the transform rebuilt via
+  `from_dict` and targets in `qa["targets"]`, `list_cached`, `cache_path`);
+  `docs/HANDOFF_A.md` has the exact key table; `DATA_SPEC.md` cache section
+  filled. 35 new synthetic tests (`tests/test_cache.py`,
+  `tests/test_preprocess.py`), including a 2-worker in-process run and a
+  subprocess run of the script itself with `--workers 2` and a corrupt PLY.
+  The CLI was also smoke-run by hand with two spawned workers on a synthetic
+  root. senior-reviewer round 1: **FIX-FIRST**, all four items applied (the
+  symmetric targets staleness check, naming suspicious / with-replacement
+  ears and failing suspicious ones, the HANDOFF wording that the 1e-9
+  guarantee is on the float64 values and stored float32 targets invert to
+  ~1e-6 mm, and the `__mp_main__` subprocess test); nice-to-have temp sweep
+  applied; left as-is: `sampled_with_replacement` is derived on load rather
+  than stored (schema stays as briefed) and the "cwd then repo root" config
+  resolution stays private in `src/geometry.py` (a public helper would touch
+  the frozen module — Alfred's call). Reviewer round 2: **SHIP**; its last
+  nice-to-have applied too (no pre-run temp sweep, so a concurrent run
+  sharing `cache/` cannot lose its in-flight file; the post-run sweep
+  tolerates a file another process holds open). 137 tests pass.
+- 2026-09-08 — **CROP FROZEN** from Alfred's full-dataset run. `configs/crop.yaml`
+  built from `splits/train_ids.txt` (160 subjects, sha256 `b2d5ff90...`, 0
+  failures): left lo[-52.01, 40.77, -53.14] hi[29.29, 122.22, 58.69]; right
+  lo[-55.39, -120.96, -50.96] hi[27.49, -43.49, 59.68]. Margin is the 15 mm
+  floor on every axis except left Z (15.13). Freeze criterion **PASS** — min
+  leave-one-out headroom left X 13.83 / Y 11.36 / Z 11.32, right X 12.21 /
+  Y 14.35 / Z 10.94 mm, all > 0; tightest training subjects P0130, P0307,
+  P0174, P0013, P0111. Observed crops ~23-25k vertices per ear (P0001/P0002),
+  85/85 landmarks inside on both, so 2048 points are sampled without
+  replacement with ~11x headroom. Dataset facts recorded in `DATA_SPEC.md`:
+  200/200 meshes (vertices 1.101e5 / 3.346e5 / 9.325e5 min/median/max, faces
+  2.203e5 / 6.693e5 / 1.863e6, no stored normals anywhere), 400/400 landmark
+  files, global vertex envelope X[-257.4, 140.2] Y[-298.1, 270.3]
+  Z[-312.3, 164.7] mm, and the per-side landmark envelopes. Two new scripts for
+  Alfred to run: `scripts/check_roundtrip.py` (mesh-only transform, GT pushed
+  through and back, exit 1 above 1e-9 mm, plus the canonical envelope for Role
+  C) and `scripts/check_crop_all.py` (frozen box on the held-out val subjects;
+  exit 1 on any truncated ear or suspicious crop). `crop_stats._describe_existing`
+  became the public `describe_crop_config` so both new scripts print which
+  frozen config and split they validated. 99 tests pass (20 new, synthetic
+  only); every new guard was mutation-checked.
+- 2026-09-08 - senior-reviewer FIX-FIRST applied to the two new scripts: a
+  listed subject with no mesh now goes into `failures` instead of a warning
+  line, so a wrong `--root` or a stale subject list can no longer check 3 ears
+  of 400 and still print PASS (both scripts gained `--allow-failures` with the
+  same meaning as `crop_stats.py`, and `--limit` is applied before the mesh
+  lookup so an out-of-scope subject is not reported missing). The only
+  failing-verdict round-trip test used `--tol -1`, which pinned nothing: a test
+  now monkeypatches `inverse_transform_points` to be wrong by 1e-3 and asserts
+  the run fails at the default tolerance and reports that error. Also from the
+  review: `check_roundtrip` inverts through `EarTransform.from_dict(to_dict())`
+  (the cache path Role D will actually use, so serialisation loss is measured),
+  asserts `MIRROR_SIDE`/`MIRROR_AXIS` against `canonicalize_ear`'s defaults at
+  import so the check cannot drift from the pipeline, and both scripts echo
+  `--limit` in the verdict; `check_crop_all` warns when the subject list is the
+  very split `crop.yaml` was built from (a PASS there is true by construction).
+  Left as-is by decision: a crop below `N_POINTS` but above `min_vertices` is
+  reported, not failed - Alfred's call, and the brief says exit 1 only on a
+  truncated ear or a suspicious crop. Reviewer verdict: **SHIP**; its three
+  nice-to-haves were applied too (the "same split as the config" caveat is
+  repeated in the verdict block, `check_crop_all --allow-failures` is now
+  pinned by a test, and the convention guards raise `RuntimeError` instead of
+  `assert`, which `python -O` would strip). 102 tests pass.
 - 2026-09-08 — real-data findings applied: annotation layout confirmed as
   `<idx>,[<x> <y> <z>]`, so `parse_landmark_line` strips brackets/commas,
   demands exactly 4 tokens and returns `(index, xyz)`; `load_landmarks` requires
