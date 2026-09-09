@@ -38,13 +38,17 @@ Use this file for every meaningful training/evaluation run.
 
 
 ### B1 — Canonical template
-- Date:
-- Owner:
-- Transform version:
-- Validation mean:
-- Median:
-- P95:
+- Date: 2026-09-08
+- Owner: Pravi (Role C)
+- Transform version: Role A frozen canonical transform (mirror_side=right, mirror_axis=1)
+- Validation mean: 5.5373456214629915
+- Median: 5.259664938574634
+- P95: 10.125245094139707
 - Notes:
+  - Shared canonical template (single template for both ears).
+  - Built from TRAIN cached canonical GT targets only (320 ears total: 160 left + 160 right).
+  - Evaluated on VAL ears after inverse transform back to global coordinates.
+  - Improves over B0 on mean/median/p95.
 
 ---
 
