@@ -358,7 +358,19 @@ are consistent across subjects.
 - coordinate frame (original Huawei XYZ): ?
 - dtype / precision: ?
 
-## Train/val split (owned by C — reference only) (PROVISIONAL Role A default)
+
+## Frozen train/validation split (owned by C — canonical reference)
+- Split definition file: `configs/split_seed42.json` (canonical)
+- Derived mirror files (for geometry/cache tooling compatibility): `splits/train_ids.txt`, `splits/val_ids.txt`
+- Number of train / val subjects: 160 / 40
+- Split type: subject-level (both ears from a subject always in the same fold)
+- Split generation: fixed list produced from sorted subject IDs with `numpy.default_rng(42)` (Role C tooling)
+- Consistency status: `configs/split_seed42.json` matches `splits/train_ids.txt` / `splits/val_ids.txt`
+- Crop/hash linkage: `configs/crop.yaml` hash is already consistent with this split
+- If split changes in future: regenerate `configs/crop.yaml` first, then rebuild cache
+
+
+## Train/val split (owned by C — reference only) (PROVISIONAL Role A default) (been replaced - see above)
 - split definition file: `splits/train_ids.txt` / `splits/val_ids.txt` (IDs only,
   committed). Train list sha256 `b2d5ff90...`, recorded inside `configs/crop.yaml`.
 - number of train / val subjects: 160 / 40, subject-level (both ears of a
