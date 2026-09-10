@@ -9,9 +9,10 @@ Verified conventions (``DATA_SPEC.md``, 2026-09-08)::
     $HUAWEI_DATA_ROOT/landmarks/P<id>_right_ear_landmarks.csv
 
 Subject IDs are the full ``"P" + 4 digits`` string (``"P0001"``), non-contiguous.
-Landmark CSVs are 85 lines, no header, one comma per line, whitespace-separated
-with variable spacing; ``load_landmarks`` accepts both candidate layouts
-(``"x, y z"`` and ``"idx,x y z"``).
+Landmark CSVs are 85 lines, no header, one line per landmark in the form
+``"<idx>,[<x> <y> <z>]"`` — a numpy array repr in square brackets, variable
+spacing, occasionally scientific notation — with ``idx`` running 0..84 in file
+order (verified 2026-09-08, see ``DATA_SPEC.md``).
 
 Invariant: `load_mesh` must never require annotations — inference sees meshes
 only.
@@ -52,6 +53,10 @@ _SUBJECT_ID_RE = re.compile(r"^(P\d{4})")
 
 # Landmarks per ear (four contours: 25 + 30 + 20 + 10).
 N_LANDMARKS = 85
+
+# Tokens per landmark CSV line once brackets/commas are treated as separators:
+# the landmark index plus x, y, z ("<idx>,[<x> <y> <z>]").
+LANDMARK_LINE_TOKENS = 4
 
 
 @dataclass
@@ -250,35 +255,53 @@ def load_mesh(path: str | Path) -> RawSubject:
     )
 
 
-def parse_landmark_line(line: str) -> tuple[int, np.ndarray]:
-    """Parse one landmark CSV line into ``(n_tokens, xyz)``.
+def landmark_line_tokens(line: str) -> list[str]:
+    """Split one landmark CSV line into its numeric tokens.
 
-    Commas are treated as whitespace, so both candidate layouts work:
-    ``"x, y z"`` (3 tokens) and ``"idx,x y z"`` (4 tokens, integer-valued
-    index dropped). ``n_tokens`` is the count *after* comma replacement, before
-    any index column is dropped — ``scripts/inspect_dataset.py`` histograms it
-    to tell the two layouts apart.
+    The real layout is ``"<idx>,[<x> <y> <z>]"``: a numpy array repr, so square
+    brackets, the comma and runs of whitespace are all just separators. A
+    well-formed line yields exactly 4 tokens (index + xyz).
+    """
+    return line.replace("[", " ").replace("]", " ").replace(",", " ").split()
+
+
+def parse_landmark_line(line: str) -> tuple[int, np.ndarray]:
+    """Parse one landmark CSV line into ``(index, xyz)``.
+
+    Layout (verified 2026-09-08, ``DATA_SPEC.md``)::
+
+        <idx>,[<x> <y> <z>]
+
+    i.e. a landmark index, a comma, then a numpy array repr in square brackets
+    with variable spacing and occasionally scientific notation
+    (``5.56e-02``). Exactly ``LANDMARK_LINE_TOKENS`` tokens must remain once
+    brackets and commas are treated as separators, and the first must be
+    integer-valued.
 
     Raises
     ------
     ValueError
-        On a non-numeric token, or if anything other than exactly 3 coordinates
-        remain.
+        On a wrong token count, a non-numeric token or a non-integer index.
+        The message never quotes the line: annotation coordinates must not leak
+        into logs or tracebacks, so callers add file and line number instead.
     """
-    tokens = line.replace(",", " ").split()
-    n_tokens = len(tokens)
+    tokens = landmark_line_tokens(line)
+    if len(tokens) != LANDMARK_LINE_TOKENS:
+        raise ValueError(
+            f"expected {LANDMARK_LINE_TOKENS} tokens ('<idx>,[<x> <y> <z>]'), "
+            f"got {len(tokens)}"
+        )
     try:
         values = [float(t) for t in tokens]
-    except ValueError as exc:
-        raise ValueError(f"non-numeric token in landmark line {line!r}") from exc
-    if n_tokens == 4 and values[0].is_integer():
-        values = values[1:]  # leading index column
-    if len(values) != 3:
-        raise ValueError(
-            f"expected 3 coordinates (or index + 3) per landmark line, got {n_tokens} "
-            f"tokens in {line!r}"
-        )
-    return n_tokens, np.asarray(values, dtype=np.float64)
+    except ValueError:
+        # `from None`, deliberately: float()'s own message quotes the token it
+        # choked on, and a printed traceback would then carry a real landmark
+        # coordinate. The line number the caller adds is enough to find it.
+        raise ValueError("non-numeric token") from None
+    index = values[0]
+    if not index.is_integer():
+        raise ValueError("landmark index column is not an integer")
+    return int(index), np.asarray(values[1:], dtype=np.float64)
 
 
 def _check_side_in_filename(path: Path, side: str) -> None:
@@ -292,10 +315,13 @@ def _check_side_in_filename(path: Path, side: str) -> None:
 def load_landmarks(path: str | Path, side: str) -> np.ndarray:
     """Read one side's ground-truth landmarks — TRAIN/DEV ONLY.
 
-    Text file, 85 non-empty lines, each ``"x, y z"`` or ``"idx,x y z"`` with
-    arbitrary whitespace (CRLF fine, no header, no BOM expected but tolerated).
-    Every line must use the *same* layout: a file mixing 3-token and 4-token
-    lines is rejected, naming the first line that disagrees.
+    Text file, 85 non-empty lines, each ``"<idx>,[<x> <y> <z>]"`` with
+    arbitrary whitespace inside the brackets and coordinates sometimes in
+    scientific notation (CRLF fine, no header, no BOM expected but tolerated).
+    One layout for the whole file: every line must carry the index column and
+    exactly three coordinates, and the indices must run ``0..84`` in file
+    order, so a reordered, duplicated or truncated annotation is refused rather
+    than silently loaded in the wrong order.
 
     Returns
     -------
@@ -310,9 +336,11 @@ def load_landmarks(path: str | Path, side: str) -> np.ndarray:
     Raises
     ------
     ValueError
-        Naming the offending line number on a malformed line or on the first
-        line whose token count disagrees with the rest of the file, or if the
-        file does not contain exactly 85 landmark lines.
+        Naming the offending line number on a malformed line, on a line whose
+        index does not match its position, or if the file does not contain
+        exactly 85 landmark lines. Messages carry the file, the line number and
+        the reason only — never the line's contents, which are annotation
+        coordinates.
     """
     if side not in SIDES:
         raise ValueError(f"side must be one of {SIDES}, got {side!r}")
@@ -321,29 +349,25 @@ def load_landmarks(path: str | Path, side: str) -> np.ndarray:
 
     text = path.read_text(encoding="utf-8-sig")
     rows: list[np.ndarray] = []
-    layout_tokens: int | None = None      # 3 ("x, y z") or 4 ("idx,x y z")
-    layout_lineno: int | None = None      # where that layout was first seen
     for lineno, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
             continue
+        # parse_landmark_line enforces the one accepted layout, so a line in any
+        # other shape (a missing index column, a missing bracket, a lost
+        # coordinate) is rejected here, named by line number.
         try:
-            n_tokens, xyz = parse_landmark_line(line)
+            index, xyz = parse_landmark_line(line)
         except ValueError as exc:
             raise ValueError(f"{path}: line {lineno}: {exc}") from exc
-        if n_tokens not in (3, 4):
+        # `len(rows)` is the 0-based position among the landmark lines; it equals
+        # the 0-based line number for the real files, which contain no blank
+        # lines, and stays meaningful if a blank line is skipped.
+        if index != len(rows):
+            # The parsed index is not echoed: under any layout surprise it could
+            # be a coordinate rather than the 0..84 metadata it should be.
             raise ValueError(
-                f"{path}: line {lineno}: expected 3 or 4 tokens per landmark line, got {n_tokens}"
-            )
-        # One file, one layout. A file that mixes "x, y z" and "idx,x y z" lines
-        # is not a layout we can trust to mean what it looks like, so refuse it
-        # rather than silently guessing per line (see DATA_SPEC.md).
-        if layout_tokens is None:
-            layout_tokens, layout_lineno = n_tokens, lineno
-        elif n_tokens != layout_tokens:
-            raise ValueError(
-                f"{path}: line {lineno}: inconsistent CSV layout — {n_tokens} tokens here but "
-                f"{layout_tokens} on line {layout_lineno}; the whole file must use one layout "
-                f"(either 'x, y z' or 'idx,x y z')"
+                f"{path}: line {lineno}: landmark index does not match its 0-based "
+                f"position {len(rows)}; indices must run 0..{N_LANDMARKS - 1} in file order"
             )
         rows.append(xyz)
 

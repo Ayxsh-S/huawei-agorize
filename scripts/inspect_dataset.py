@@ -27,7 +27,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root, for `src`
 
-from src.data import load_landmarks, parse_landmark_line, subject_id_from_path  # noqa: E402
+from src.data import (  # noqa: E402
+    landmark_line_tokens,
+    load_landmarks,
+    parse_landmark_line,
+    subject_id_from_path,
+)
 
 MESH_EXTS = {".ply"}
 ANN_EXTS = {".csv", ".txt", ".npy", ".json", ".npz"}
@@ -345,29 +350,39 @@ def load_annotation(path: Path, side: str) -> tuple[np.ndarray | None, str]:
 
 
 def token_histogram(path: Path) -> tuple[Counter, int, int]:
-    """Per-line token counts (after comma->space) plus comma/BOM facts. No coordinates."""
+    """Per-line token counts plus comma/bracket/BOM facts. No coordinates.
+
+    The layout is confirmed (``"<idx>,[<x> <y> <z>]"``, see DATA_SPEC.md); this
+    stays as a conformance check, so a file that ever deviates is visible here
+    rather than only as a loader exception.
+    """
     raw = path.read_bytes()
     has_bom = raw.startswith(b"\xef\xbb\xbf")
     text = raw.decode("utf-8-sig", errors="replace")
     counts: Counter = Counter()
     commas: Counter = Counter()
+    brackets: Counter = Counter()
+    n_unparseable = 0
     for line in text.splitlines():
         if not line.strip():
             continue
         commas[line.count(",")] += 1
+        brackets[(line.count("["), line.count("]"))] += 1
+        counts[len(landmark_line_tokens(line))] += 1
         try:
-            n_tokens, _ = parse_landmark_line(line)
+            parse_landmark_line(line)
         except ValueError:
-            n_tokens = -1  # unparseable
-        counts[n_tokens] += 1
+            n_unparseable += 1
     crlf = raw.count(b"\r\n")
     print(f"    BOM       : {has_bom}   CRLF line endings: {crlf}")
-    print(f"    commas per line : {dict(sorted(commas.items()))}")
-    print(f"    tokens per line : {dict(sorted(counts.items()))}   (-1 = unparseable)")
-    layout = {3: "'x, y z'  (3 numbers, no index column)", 4: "'idx,x y z'  (leading integer index)"}
-    for n, name in layout.items():
-        if counts.get(n):
-            print(f"      -> {counts[n]} line(s) match layout {name}")
+    print(f"    commas per line   : {dict(sorted(commas.items()))}")
+    print(f"    brackets per line : {dict(sorted(brackets.items()))}   ([ , ])")
+    print(f"    tokens per line   : {dict(sorted(counts.items()))}")
+    print(f"    lines rejected by parse_landmark_line: {n_unparseable}")
+    if set(counts) == {4} and not n_unparseable:
+        print("      -> matches the verified layout '<idx>,[<x> <y> <z>]'")
+    else:
+        print("      -> !! DOES NOT match the verified layout '<idx>,[<x> <y> <z>]'")
     return counts, crlf, int(has_bom)
 
 
@@ -400,7 +415,11 @@ def print_first_subject_annotations(by_subject: dict[str, dict[str, Path]]) -> N
         print(f"    n_landmarks: {xyz.shape[0]}   (expected 85)")
         print_axis_ranges("per-axis min/max:", xyz.min(axis=0), xyz.max(axis=0), indent="    ")
         mean_y = float(xyz[:, 1].mean())
-        print(f"    mean Y sign: {'+' if mean_y > 0 else '-'}  (|mean Y| = {fmt(abs(mean_y))})")
+        expected = "+" if side == "left" else "-"  # +Y = subject's left
+        print(
+            f"    mean Y sign: {'+' if mean_y > 0 else '-'}  (expected {expected} for {side}; "
+            f"|mean Y| = {fmt(abs(mean_y))})"
+        )
 
 
 def print_annotation_envelope(by_subject: dict[str, dict[str, Path]], limit: int) -> None:
@@ -438,11 +457,14 @@ def print_annotation_envelope(by_subject: dict[str, dict[str, Path]], limit: int
             hi[side] = np.maximum(hi[side], xyz.max(axis=0))
             extents[side].append(xyz.max(axis=0) - xyz.min(axis=0))
 
+            # Verified convention (DATA_SPEC.md): +Y = subject's LEFT, so left
+            # ears sit at mean Y > 0 and right ears at mean Y < 0. This is the
+            # opposite of the challenge page's wording — the data wins.
             mean_y = float(xyz[:, 1].mean())
-            if side == "left" and mean_y > 0:
-                sign_warnings.append(f"LEFT ear {sid} has mean Y > 0 ({fmt(mean_y)})")
-            if side == "right" and mean_y < 0:
-                sign_warnings.append(f"RIGHT ear {sid} has mean Y < 0 ({fmt(mean_y)})")
+            if side == "left" and mean_y < 0:
+                sign_warnings.append(f"LEFT ear {sid} has mean Y < 0 ({fmt(mean_y)})")
+            if side == "right" and mean_y > 0:
+                sign_warnings.append(f"RIGHT ear {sid} has mean Y > 0 ({fmt(mean_y)})")
 
     print(f"  loaded ok: {dict(n_ok)}")
     print(f"  shapes seen: { {f'{s}:{sh}': n for (s, sh), n in shapes.items()} }")
@@ -466,13 +488,17 @@ def print_annotation_envelope(by_subject: dict[str, dict[str, Path]], limit: int
     print("  " + "-" * 70)
     if sign_warnings:
         print(f"  !! Y-SIGN WARNINGS: {len(sign_warnings)} ear(s) violate the expected convention")
-        print("     (expected: left ear mean Y < 0, right ear mean Y > 0)")
+        print("     (expected: +Y = subject's left, so left ear mean Y > 0, right ear mean Y < 0)")
         for w in sign_warnings[:20]:
             print(f"     {w}")
         if len(sign_warnings) > 20:
             print(f"     ... and {len(sign_warnings) - 20} more")
+    elif not sum(n_ok.values()):
+        # No ear loaded, so no ear could violate anything: say so instead of
+        # reporting a vacuous pass.
+        print("  Y-SIGN: NOT CHECKED — no ears loaded.")
     else:
-        print("  OK: every left ear has mean Y < 0 and every right ear has mean Y > 0.")
+        print("  OK: every left ear has mean Y > 0 and every right ear has mean Y < 0.")
 
 
 # --------------------------------------------------------------------------- #

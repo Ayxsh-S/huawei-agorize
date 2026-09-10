@@ -7,6 +7,7 @@ themselves — no Huawei data is ever read (see ``CLAUDE.md``).
 from __future__ import annotations
 
 import struct
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -269,126 +270,236 @@ def _synthetic_landmarks(seed: int = 0) -> np.ndarray:
     return rng.normal(loc=[40.0, -70.0, 10.0], scale=[8.0, 4.0, 12.0], size=(85, 3))
 
 
-def _write_csv_xyz_layout(path: Path, points: np.ndarray, newline: str = "\r\n") -> Path:
-    """``x, y z`` — one comma after x, variable spacing, CRLF like the real files."""
+def _format_landmark_line(index: int, point: np.ndarray, gap: str = " ") -> str:
+    """One real-layout line: ``"<idx>,[<x> <y> <z>]"`` (a numpy array repr)."""
+    x, y, z = point
+    return f"{index},[{x:.6f}{gap}{y:.6f}{gap}{z:.6f}]"
+
+
+def _write_csv(path: Path, points: np.ndarray, newline: str = "\r\n") -> Path:
+    """Write the verified layout: ``idx,[x y z]``, CRLF, variable spacing.
+
+    Line 3 (0-based index 2) carries scientific-notation coordinates and line 5
+    a double-space separator — both occur in the real files.
+    """
     lines = []
-    for i, (x, y, z) in enumerate(points):
-        gap = " " * (1 + i % 3)
-        lines.append(f"{x:.6f},{gap}{y:.6f}{gap}{z:.6f}")
+    for i, point in enumerate(points):
+        if i == 2:
+            x, y, _ = point
+            lines.append(f"{i},[{x:.6e} {y:.6e} {5.56e-02:.6e}]")
+        else:
+            lines.append(_format_landmark_line(i, point, gap="  " if i == 4 else " "))
     path.write_bytes((newline.join(lines) + newline).encode("ascii"))
     return path
 
 
-def _write_csv_index_layout(path: Path, points: np.ndarray, newline: str = "\r\n") -> Path:
-    """``idx,x y z`` — leading integer index column."""
-    lines = []
-    for i, (x, y, z) in enumerate(points):
-        gap = " " * (1 + i % 3)
-        lines.append(f"{i},{x:.6f}{gap}{y:.6f} {z:.6f}")
-    path.write_bytes((newline.join(lines) + newline).encode("ascii"))
-    return path
+def _expected(points: np.ndarray) -> np.ndarray:
+    """``points`` with the scientific-notation line `_write_csv` plants applied."""
+    out = points.copy()
+    if len(out) > 2:
+        out[2, 2] = 5.56e-02
+    return out
 
 
-def test_parse_landmark_line_layouts() -> None:
-    n, xyz = parse_landmark_line("1.5, 2.5 3.5")
-    assert n == 3
+def test_parse_landmark_line_real_layout() -> None:
+    index, xyz = parse_landmark_line("0,[1.5 2.5 3.5]")
+    assert index == 0
     np.testing.assert_allclose(xyz, [1.5, 2.5, 3.5])
 
-    n, xyz = parse_landmark_line("7,   1.5  2.5    3.5")
-    assert n == 4
-    np.testing.assert_allclose(xyz, [1.5, 2.5, 3.5])
-
-    with pytest.raises(ValueError):
-        parse_landmark_line("1.5, 2.5")
-    with pytest.raises(ValueError):
-        parse_landmark_line("1.5, 2.5 3.5 4.5")  # 4 tokens but no integer index
-    with pytest.raises(ValueError):
-        parse_landmark_line("a, 2.5 3.5")
+    # variable spacing, whitespace inside the brackets, scientific notation
+    index, xyz = parse_landmark_line("84,[ -1.5   2.5  5.56e-02 ]")
+    assert index == 84
+    np.testing.assert_allclose(xyz, [-1.5, 2.5, 5.56e-02])
 
 
-def test_load_landmarks_xyz_layout(tmp_path: Path) -> None:
-    expected = _synthetic_landmarks(1)
-    path = _write_csv_xyz_layout(tmp_path / "P0001_left_ear_landmarks.csv", expected)
+@pytest.mark.parametrize(
+    "line",
+    [
+        "0,[1.5 2.5]",            # a coordinate short
+        "1.5, 2.5 3.5",           # no index column (the old candidate layout)
+        "0,[1.5 2.5 3.5 4.5]",    # a coordinate too many
+        "0,[a 2.5 3.5]",          # non-numeric
+        "0.5,[1.5 2.5 3.5]",      # non-integer index
+        "",                       # empty
+    ],
+)
+def test_parse_landmark_line_rejects_other_shapes(line: str) -> None:
+    with pytest.raises(ValueError):
+        parse_landmark_line(line)
+
+
+def _full_traceback(excinfo: pytest.ExceptionInfo) -> str:
+    """The whole chain — message, `__cause__` and `__context__` — as printed."""
+    exc = excinfo.value
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def test_parse_landmark_line_error_never_quotes_the_line() -> None:
+    """Coordinates are annotation data: they must not leak into a traceback.
+
+    Checked over the printed chain, not just ``str(exc)``: ``float()``'s own
+    message quotes the token it rejected, so a chained cause would leak it.
+    """
+    for line in ("0,[1.5 987654.321]", "0,[a 987654.321 3.5]", "0.5,[1.5 987654.321 3.5]"):
+        with pytest.raises(ValueError) as excinfo:
+            parse_landmark_line(line)
+        assert "987654.321" not in str(excinfo.value)
+        assert "987654.321" not in _full_traceback(excinfo)
+
+
+def test_load_landmarks_real_layout(tmp_path: Path) -> None:
+    points = _synthetic_landmarks(1)
+    path = _write_csv(tmp_path / "P0001_left_ear_landmarks.csv", points)
 
     got = load_landmarks(path, "left")
 
     assert got.shape == (85, 3)
     assert got.dtype == np.float64
-    np.testing.assert_allclose(got, expected, atol=1e-6)
-
-
-def test_load_landmarks_index_layout(tmp_path: Path) -> None:
-    expected = _synthetic_landmarks(2)
-    path = _write_csv_index_layout(tmp_path / "P0001_right_ear_landmarks.csv", expected)
-
-    got = load_landmarks(path, "right")
-
-    assert got.shape == (85, 3)
-    np.testing.assert_allclose(got, expected, atol=1e-6)
+    np.testing.assert_allclose(got, _expected(points), atol=1e-6)
 
 
 def test_load_landmarks_lf_and_trailing_blank_lines(tmp_path: Path) -> None:
-    expected = _synthetic_landmarks(3)
-    path = _write_csv_xyz_layout(tmp_path / "P0002_left_ear_landmarks.csv", expected, newline="\n")
+    points = _synthetic_landmarks(3)
+    path = _write_csv(tmp_path / "P0002_left_ear_landmarks.csv", points, newline="\n")
     path.write_bytes(path.read_bytes() + b"\n\n")
 
-    np.testing.assert_allclose(load_landmarks(path, "left"), expected, atol=1e-6)
+    np.testing.assert_allclose(load_landmarks(path, "left"), _expected(points), atol=1e-6)
 
 
 def test_load_landmarks_wrong_line_count(tmp_path: Path) -> None:
-    path = _write_csv_xyz_layout(tmp_path / "P0003_left_ear_landmarks.csv", _synthetic_landmarks()[:84])
+    path = _write_csv(tmp_path / "P0003_left_ear_landmarks.csv", _synthetic_landmarks()[:84])
     with pytest.raises(ValueError, match="85"):
         load_landmarks(path, "left")
 
-    path = _write_csv_xyz_layout(tmp_path / "P0004_left_ear_landmarks.csv", np.vstack([_synthetic_landmarks(), [[0.0, 0.0, 0.0]]]))
+    path = _write_csv(
+        tmp_path / "P0004_left_ear_landmarks.csv",
+        np.vstack([_synthetic_landmarks(), [[0.0, 0.0, 0.0]]]),
+    )
     with pytest.raises(ValueError, match="85"):
         load_landmarks(path, "left")
 
 
 def test_load_landmarks_names_bad_line(tmp_path: Path) -> None:
-    path = _write_csv_xyz_layout(tmp_path / "P0005_left_ear_landmarks.csv", _synthetic_landmarks())
+    path = _write_csv(tmp_path / "P0005_left_ear_landmarks.csv", _synthetic_landmarks())
     lines = path.read_bytes().split(b"\r\n")
-    lines[41] = b"1.0, 2.0"  # line 42 (1-based) loses a coordinate
+    lines[41] = b"41,[1.0 2.0]"  # line 42 (1-based) loses a coordinate
     path.write_bytes(b"\r\n".join(lines))
 
     with pytest.raises(ValueError, match="line 42"):
         load_landmarks(path, "left")
 
 
+def test_load_landmarks_error_never_quotes_the_line(tmp_path: Path) -> None:
+    """File and line number, never the coordinates on it."""
+    path = _write_csv(tmp_path / "P0010_left_ear_landmarks.csv", _synthetic_landmarks())
+    lines = path.read_bytes().split(b"\r\n")
+    lines[41] = b"41,[1.0 987654.321 3.0 4.0]"
+    path.write_bytes(b"\r\n".join(lines))
+
+    with pytest.raises(ValueError) as excinfo:
+        load_landmarks(path, "left")
+    assert "line 42" in str(excinfo.value)
+    assert "987654.321" not in str(excinfo.value)
+    assert "987654.321" not in _full_traceback(excinfo)
+
+
 def test_load_landmarks_rejects_mixed_layout(tmp_path: Path) -> None:
-    """A file that switches between the two layouts is refused, naming the line."""
+    """One layout for the whole file — a line in any other shape is refused."""
     points = _synthetic_landmarks(7)
 
-    # 3-token file with one 4-token line at line 13 (1-based).
-    path = _write_csv_xyz_layout(tmp_path / "P0007_left_ear_landmarks.csv", points)
+    # index column dropped on line 13 (1-based)
+    path = _write_csv(tmp_path / "P0007_left_ear_landmarks.csv", points)
     lines = path.read_bytes().split(b"\r\n")
     x, y, z = points[12]
-    lines[12] = f"12,{x:.6f} {y:.6f} {z:.6f}".encode("ascii")
+    lines[12] = f"[{x:.6f} {y:.6f} {z:.6f}]".encode("ascii")
     path.write_bytes(b"\r\n".join(lines))
 
     with pytest.raises(ValueError, match="line 13"):
         load_landmarks(path, "left")
 
-    # ... and the other direction: a 4-token file with one bare xyz line at 5.
-    path2 = _write_csv_index_layout(tmp_path / "P0008_left_ear_landmarks.csv", points)
+    # ... and a line carrying a fourth number instead of the brackets, at line 5.
+    path2 = _write_csv(tmp_path / "P0008_left_ear_landmarks.csv", points)
     lines2 = path2.read_bytes().split(b"\r\n")
     x, y, z = points[4]
-    lines2[4] = f"{x:.6f}, {y:.6f} {z:.6f}".encode("ascii")
+    lines2[4] = f"4,{x:.6f} {y:.6f} {z:.6f} 0.0".encode("ascii")
     path2.write_bytes(b"\r\n".join(lines2))
 
     with pytest.raises(ValueError, match="line 5"):
         load_landmarks(path2, "left")
 
-    # A consistent file of either layout still loads.
-    ok = _write_csv_index_layout(tmp_path / "P0009_left_ear_landmarks.csv", points)
-    np.testing.assert_allclose(load_landmarks(ok, "left"), points, atol=1e-6)
+    # A consistent file still loads.
+    ok = _write_csv(tmp_path / "P0009_left_ear_landmarks.csv", points)
+    np.testing.assert_allclose(load_landmarks(ok, "left"), _expected(points), atol=1e-6)
+
+
+def test_load_landmarks_rejects_index_mismatch(tmp_path: Path) -> None:
+    """``idx`` must equal the landmark's 0-based position — no reordering, no gaps."""
+    points = _synthetic_landmarks(8)
+
+    # Line 8 (1-based) carries index 8 instead of 7.
+    path = _write_csv(tmp_path / "P0011_left_ear_landmarks.csv", points)
+    lines = path.read_bytes().split(b"\r\n")
+    lines[7] = _format_landmark_line(8, points[7]).encode("ascii")
+    path.write_bytes(b"\r\n".join(lines))
+
+    with pytest.raises(ValueError) as excinfo:
+        load_landmarks(path, "left")
+    assert "line 8" in str(excinfo.value)
+    # names the expected position, never the index token read off the line
+    assert "position 7" in str(excinfo.value)
+
+    # The index itself is never echoed: under a layout surprise it could be a
+    # coordinate rather than the 0..84 metadata it is supposed to be.
+    path3 = _write_csv(tmp_path / "P0014_left_ear_landmarks.csv", points)
+    lines3 = path3.read_bytes().split(b"\r\n")
+    lines3[7] = _format_landmark_line(987654, points[7]).encode("ascii")
+    path3.write_bytes(b"\r\n".join(lines3))
+
+    with pytest.raises(ValueError) as excinfo:
+        load_landmarks(path3, "left")
+    assert "987654" not in _full_traceback(excinfo)
+
+    # A file numbered from 1 is refused on its very first line.
+    path2 = tmp_path / "P0012_left_ear_landmarks.csv"
+    body = "\r\n".join(_format_landmark_line(i + 1, p) for i, p in enumerate(points))
+    path2.write_bytes((body + "\r\n").encode("ascii"))
+
+    with pytest.raises(ValueError, match="line 1"):
+        load_landmarks(path2, "left")
+
+
+def test_load_landmarks_rejects_non_finite_coordinates(tmp_path: Path) -> None:
+    """`nan`/`inf` parse as floats, so the finiteness guard must catch them.
+
+    Hard failure is deliberate: a non-finite landmark would silently poison a
+    crop envelope or a canonical transform. If Huawei ever ships `nan` for an
+    unlabelled landmark this test is the place that decision gets revisited.
+    """
+    for lineno, bad in ((30, "nan"), (60, "inf")):
+        points = _synthetic_landmarks(9)
+        path = _write_csv(tmp_path / f"P00{13 + lineno}_left_ear_landmarks.csv", points)
+        lines = path.read_bytes().split(b"\r\n")
+        lines[lineno - 1] = f"{lineno - 1},[{bad} 1.0 2.0]".encode("ascii")
+        path.write_bytes(b"\r\n".join(lines))
+
+        with pytest.raises(ValueError, match="non-finite"):
+            load_landmarks(path, "left")
+
+
+def test_load_landmarks_tolerates_a_bom(tmp_path: Path) -> None:
+    """A UTF-8 BOM must not turn line 1 into a malformed line."""
+    points = _synthetic_landmarks(4)
+    path = _write_csv(tmp_path / "P0013_left_ear_landmarks.csv", points)
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+
+    np.testing.assert_allclose(load_landmarks(path, "left"), _expected(points), atol=1e-6)
 
 
 def test_load_landmarks_rejects_side_mismatch(tmp_path: Path) -> None:
-    path = _write_csv_xyz_layout(tmp_path / "P0006_left_ear_landmarks.csv", _synthetic_landmarks())
-    with pytest.raises(ValueError):
+    path = _write_csv(tmp_path / "P0006_left_ear_landmarks.csv", _synthetic_landmarks())
+    with pytest.raises(ValueError, match="side"):
         load_landmarks(path, "right")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="side"):
         load_landmarks(path, "middle")
 
 
@@ -417,13 +528,13 @@ def test_list_subjects_and_subject_landmarks(tmp_path: Path) -> None:
 
     left = _synthetic_landmarks(10)
     right = _synthetic_landmarks(11)
-    _write_csv_xyz_layout(landmark_path("P0042", "left", tmp_path), left)
-    _write_csv_index_layout(landmark_path("P0042", "right", tmp_path), right)
+    _write_csv(landmark_path("P0042", "left", tmp_path), left)
+    _write_csv(landmark_path("P0042", "right", tmp_path), right)
 
     got = load_subject_landmarks("P0042", tmp_path)
     assert set(got) == {"left", "right"}
-    np.testing.assert_allclose(got["left"], left, atol=1e-6)
-    np.testing.assert_allclose(got["right"], right, atol=1e-6)
+    np.testing.assert_allclose(got["left"], _expected(left), atol=1e-6)
+    np.testing.assert_allclose(got["right"], _expected(right), atol=1e-6)
 
     raw = load_mesh(mesh_path("P0042", tmp_path))
     assert raw.subject_id == "P0042"

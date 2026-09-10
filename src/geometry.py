@@ -291,9 +291,11 @@ def make_transform(
     The side equal to ``mirror_side`` gets ``mirror_axis`` negated, so both ears
     end up in a shared canonical orientation.
 
-    Huawei's Y axis runs left ear canal to right ear canal, hence the default
-    ``mirror_axis=1`` — but this must be confirmed visually on real data and
-    recorded in ``DATA_SPEC.md`` before it is trusted.
+    Y is the axis that separates the two ears — VERIFIED on all 200 subjects,
+    ``+Y`` being the subject's LEFT (the opposite of the challenge page's
+    wording; see ``DATA_SPEC.md`` "Coordinate frame"), hence the default
+    ``mirror_axis=1``. Whether a flip is wanted at all, and on which side, is
+    measured by ``scripts/check_mirror.py`` — see ``DATA_SPEC.md`` "Mirror".
     """
     side = _check_side(side)
     mirror_side = _check_side(mirror_side, "mirror_side")
