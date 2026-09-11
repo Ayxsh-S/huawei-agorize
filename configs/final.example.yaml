@@ -1,0 +1,23 @@
+# Role D runtime config.
+# This example is runnable only after C's template artifact exists.
+mode: global_template
+crop_config: configs/crop.yaml
+point_count: 2048
+seed: 0
+mirror_side: right
+mirror_axis: 1
+template_path: outputs/role_c/global_template.npz
+output_format: npz
+
+# Filled only when B's model/checkpoint contract is frozen:
+# mode: learned
+# template_path: outputs/role_c/canonical_template_shared.npz
+# model:
+#   module: src.model
+#   class: PointNetResidual
+#   checkpoint: checkpoints/RUN_ID.pt
+#   kwargs:
+#     input_dim: 3
+# postprocessing:
+#   projection_enabled: false
+#   tta_samples: 1
